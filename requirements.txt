@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────
+# AI Research Assistant Pro — Requirements
+# ─────────────────────────────────────────────
+
+# UI
+streamlit
+
+# AI / LLM
+google-generativeai
+
+# Environment & config
+python-dotenv
+
+# Data sources
+arxiv                # arXiv API client (CS, ML, Fisika, Matematika)
+requests             # HTTP client untuk EuropePMC, Semantic Scholar, CrossRef
+
+# Data processing
+pandas
+numpy                # dependensi pandas, kadang perlu eksplisit
+
+# Visualization
+plotly
+networkx             # graph structure (dipakai graph_layer)
+pyvis                # render graph HTML (fallback jika D3 bermasalah)
+
+# PDF
+pdfplumber
+pypdf2               # backup PDF reader jika pdfplumber gagal pada file tertentu
+
+# Utilities
+tenacity             # retry decorator yang lebih rapi (opsional, alternatif manual retry)
