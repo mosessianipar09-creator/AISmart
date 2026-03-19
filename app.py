@@ -32,6 +32,9 @@ from graph_layer import (
     render_graph,
     graph_stats,
 )
+from graph_roadmap import render_roadmap, roadmap_stats
+from graph_influence import render_influence, influence_stats
+from graph_gap import render_gap, gap_stats
 
 
 # ─────────────────────────────────────────────────────
@@ -155,9 +158,17 @@ for key, default in {
     "analysis_text": "",
     "debug_log": "",
     "last_api_status": None,
+    # Tab 3 legacy (Knowledge Graph lama — dipertahankan agar tidak break)
     "graph_html": None,
     "graph_stats_data": None,
     "graph_analysis_text": "",
+    # Tab 3 baru — Research Intelligence Center
+    "roadmap_html":         None,
+    "roadmap_stats_data":   None,
+    "influence_html":       None,
+    "influence_stats_data": None,
+    "gap_html":             None,
+    "gap_stats_data":       None,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -213,10 +224,16 @@ with tab1:
             st.session_state.active_topic = topic
             st.session_state.analysis_text = ""
             st.session_state.debug_log    = log
-            # Reset graph ketika topik baru
-            st.session_state.graph_html          = None
-            st.session_state.graph_stats_data    = None
-            st.session_state.graph_analysis_text = ""
+            # Reset SEMUA graph/visualisasi ketika topik baru dicari
+            st.session_state.graph_html             = None
+            st.session_state.graph_stats_data       = None
+            st.session_state.graph_analysis_text    = ""
+            st.session_state.roadmap_html           = None
+            st.session_state.roadmap_stats_data     = None
+            st.session_state.influence_html         = None
+            st.session_state.influence_stats_data   = None
+            st.session_state.gap_html               = None
+            st.session_state.gap_stats_data         = None
 
     if debug_mode and st.session_state.debug_log:
         st.markdown("**🐛 Debug Log:**")
@@ -369,7 +386,7 @@ with tab2:
 
 
 # ══════════════════════════════════════════════════════
-# TAB 3 — KNOWLEDGE GRAPH
+# TAB 3 — RESEARCH INTELLIGENCE CENTER
 # ══════════════════════════════════════════════════════
 with tab3:
 
@@ -378,103 +395,212 @@ with tab3:
 
     else:
         papers = st.session_state.papers
-        st.markdown(f"#### 🕸️ Knowledge Graph — *{st.session_state.active_topic}*")
-        st.caption("Graph menampilkan relasi sitasi antar paper. Paper tetangga (oranye) ditambahkan otomatis jika memiliki >50 sitasi.")
+        topic  = st.session_state.active_topic
 
-        btn_build = st.button("🔨 Bangun Knowledge Graph", use_container_width=True)
+        st.markdown(f"#### 🧠 Research Intelligence Center — *{topic}*")
+        st.caption(
+            f"**{len(papers)} paper** siap dianalisis dari 3 dimensi berbeda. "
+            "Setiap fitur di-build secara independen — hasilnya tersimpan otomatis."
+        )
 
-        if btn_build:
-            with st.spinner("Membangun graph... mengambil relasi tiap paper (~10–20 detik)"):
-                try:
-                    G = build_knowledge_graph(papers)
-                    st.session_state.graph_html       = render_graph(G)
-                    st.session_state.graph_stats_data = graph_stats(G)
-                    st.session_state.graph_analysis_text = ""
-                except Exception as e:
-                    st.error(f"Gagal membangun graph: {e}")
+        sub1, sub2, sub3 = st.tabs([
+            "🗺️ Research Roadmap",
+            "🎯 Influence Map",
+            "🕳️ Gap Detector",
+        ])
 
-        if st.session_state.graph_html:
-            stats = st.session_state.graph_stats_data or {}
-
-            # Statistik ringkas
-            st.markdown("---")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total node",    stats.get("nodes",      "-"))
-            c2.metric("Total koneksi", stats.get("edges",      "-"))
-            c3.metric("Cluster",       stats.get("components", "-"))
-            c4.metric("Densitas",      stats.get("density",    "-"))
-
-            st.markdown("---")
-            info1, info2, info3 = st.columns(3)
-            info1.markdown(f"**Paper paling berpengaruh**  \n_{stats.get('most_cited','-')}_")
-            info2.markdown(f"**Paling banyak mengutip**  \n_{stats.get('most_citing','-')}_")
-            info3.markdown(f"**Paper jembatan**  \n_{stats.get('bridge_paper','-')}_")
-
-            # Legend
-            st.markdown(
-                '<span class="graph-legend-dot" style="background:#7F77DD;"></span> &gt;100 sitasi &nbsp;'
-                '<span class="graph-legend-dot" style="background:#1D9E75;"></span> 20–100 sitasi &nbsp;'
-                '<span class="graph-legend-dot" style="background:#B4B2A9;"></span> &lt;20 sitasi &nbsp;'
-                '<span class="graph-legend-dot" style="background:#EF9F27;"></span> Paper tetangga',
-                unsafe_allow_html=True
+        # ──────────────────────────────────────────────
+        # SUB-TAB 1 — RESEARCH ROADMAP
+        # ──────────────────────────────────────────────
+        with sub1:
+            st.markdown("##### 🗺️ Research Roadmap")
+            st.caption(
+                "Peta perjalanan intelektual berbentuk timeline horizontal. "
+                "Sumbu X = tahun terbit · Tier = jumlah sitasi · "
+                "Garis oranye = jalur baca yang direkomendasikan."
             )
-            st.caption("💡 Drag untuk navigasi · Hover node untuk detail · Ukuran node = jumlah sitasi")
 
-            # Render graph
-            components.html(st.session_state.graph_html, height=540, scrolling=False)
+            if st.button("🔨 Bangun Research Roadmap",
+                         key="btn_roadmap", use_container_width=True):
+                with st.spinner("Membangun roadmap… (~2 detik)"):
+                    try:
+                        st.session_state.roadmap_html       = render_roadmap(papers, height=680)
+                        st.session_state.roadmap_stats_data = roadmap_stats(papers)
+                    except Exception as exc:
+                        st.error(f"Gagal membangun Roadmap: {exc}")
 
-            # Analisis AI
-            st.markdown("---")
-            st.markdown("#### 🧠 Analisis Pola Graph oleh AI")
+            if st.session_state.roadmap_html:
+                rs = st.session_state.roadmap_stats_data or {}
+                st.markdown("---")
 
-            if st.session_state.graph_analysis_text:
-                st.markdown(st.session_state.graph_analysis_text)
-                if st.button("🔄 Regenerasi Analisis Graph"):
-                    st.session_state.graph_analysis_text = ""
+                # ── Metric cards
+                r1, r2, r3, r4 = st.columns(4)
+                r1.metric("Total Paper",          rs.get("total_papers",      "—"))
+                r2.metric("Rentang Tahun",         rs.get("year_span",         "—"))
+                r3.metric("Pioneer (>100 sit)",    rs.get("pioneer_count",     "—"))
+                r4.metric("Emerging (<20 sit)",    rs.get("emerging_count",    "—"))
+
+                st.markdown("---")
+                rc1, rc2 = st.columns(2)
+                rc1.markdown(
+                    f"**📚 Paper paling berpengaruh**  \n"
+                    f"_{rs.get('most_foundational', '—')}_"
+                )
+                rc2.markdown(
+                    f"**🚀 Mulai membaca dari**  \n"
+                    f"_{rs.get('recommended_first', '—')}_"
+                )
+                st.markdown("---")
+
+                st.caption(
+                    "💡 Hover kartu → detail · "
+                    "Klik kartu → focus mode · "
+                    "Toggle **PATH / VENUE / CONNECTIONS** di toolbar · "
+                    "Slider = filter rentang tahun secara real-time"
+                )
+                components.html(
+                    st.session_state.roadmap_html, height=700, scrolling=False
+                )
+
+                if st.button("🔄 Rebuild Roadmap", key="btn_roadmap_reset"):
+                    st.session_state.roadmap_html       = None
+                    st.session_state.roadmap_stats_data = None
                     st.rerun()
 
-            else:
-                if st.button("▶️ Analisis Pola Graph dengan AI", use_container_width=True):
-                    graph_prompt = f"""Kamu adalah analis riset ilmiah senior.
+        # ──────────────────────────────────────────────
+        # SUB-TAB 2 — INFLUENCE MAP
+        # ──────────────────────────────────────────────
+        with sub2:
+            st.markdown("##### 🎯 Influence Map")
+            st.caption(
+                "Peta tata surya pengaruh ilmiah. "
+                "Paper pilihan = matahari emas di tengah · "
+                "Ring 🔵 = leluhur intelektual · "
+                "Ring 🟢 = penerus/keturunan · "
+                "Ring ⚪ = tetangga tidak langsung."
+            )
+            st.markdown(
+                '<div class="warning-box">⏱️ <b>Perhatian:</b> '
+                'Fitur ini mengambil data jaringan sitasi dari Semantic Scholar '
+                'untuk setiap paper — proses pertama membutuhkan ~15–30 detik. '
+                'Hasil akan ter-cache 1 jam sehingga build berikutnya instan.</div>',
+                unsafe_allow_html=True
+            )
+            st.markdown("")
 
-Berikut adalah data Knowledge Graph dari topik "{st.session_state.active_topic}":
+            if st.button("🔨 Bangun Influence Map",
+                         key="btn_influence", use_container_width=True):
+                with st.spinner(
+                    "Mengambil jaringan sitasi dari Semantic Scholar… "
+                    "(~15–30 detik untuk build pertama)"
+                ):
+                    try:
+                        st.session_state.influence_html       = render_influence(papers, height=700)
+                        st.session_state.influence_stats_data = influence_stats(papers)
+                    except Exception as exc:
+                        st.error(f"Gagal membangun Influence Map: {exc}")
 
-STATISTIK GRAPH:
-- Total paper (node): {stats.get('nodes', '?')}
-- Total relasi sitasi (edge): {stats.get('edges', '?')}
-- Jumlah cluster terpisah: {stats.get('components', '?')}
-- Densitas koneksi: {stats.get('density', '?')}
-- Paper paling berpengaruh: {stats.get('most_cited', '?')}
-- Paper paling banyak mengutip: {stats.get('most_citing', '?')}
-- Paper jembatan (bridge): {stats.get('bridge_paper', '?')}
+            if st.session_state.influence_html:
+                ins = st.session_state.influence_stats_data or {}
+                st.markdown("---")
 
-DATA PAPER:
-""" + "\n".join([
-    f"- {p['title']} ({p['year']}) — {p['citations']:,} sitasi"
-    for p in papers
-]) + """
+                # ── Metric cards
+                i1, i2, i3, i4 = st.columns(4)
+                i1.metric("Total Paper",       ins.get("total_papers",     "—"))
+                i2.metric("Total Node",         ins.get("total_nodes",      "—"))
+                i3.metric("Leluhur (Ring 1)",   ins.get("ancestor_count",   "—"))
+                i4.metric("Penerus (Ring 2)",   ins.get("descendant_count", "—"))
 
-Berikan analisis dalam format:
+                st.markdown("---")
+                ic1, ic2 = st.columns(2)
+                ic1.markdown(
+                    f"**⭐ Pusat default**  \n"
+                    f"_{ins.get('center_title', '—')}_"
+                )
+                ic2.markdown(
+                    f"**🌐 Jangkauan pengaruh**  \n"
+                    f"_{ins.get('influence_reach', '—')} node terhubung_"
+                )
+                st.markdown("---")
 
-## 🌐 Struktur Jaringan
-[Jelaskan pola umum graph: terpusat, tersebar, atau terfragmentasi?]
+                st.caption(
+                    "💡 Klik node → panel detail · "
+                    "Tombol **⊙ JADIKAN PUSAT** → re-center instan · "
+                    "Toggle **PARTICLES / ORBITS / HEATMAP** · "
+                    "**COMPARE** → split-view 2 paper side-by-side"
+                )
+                components.html(
+                    st.session_state.influence_html, height=720, scrolling=False
+                )
 
-## ⭐ Paper Kunci
-[Identifikasi 2-3 paper paling strategis dalam jaringan ini]
+                if st.button("🔄 Rebuild Influence Map", key="btn_influence_reset"):
+                    st.session_state.influence_html       = None
+                    st.session_state.influence_stats_data = None
+                    st.rerun()
 
-## 🔗 Jembatan Pengetahuan
-[Jelaskan paper bridging dan artinya bagi perkembangan bidang ini]
+        # ──────────────────────────────────────────────
+        # SUB-TAB 3 — GAP DETECTOR
+        # ──────────────────────────────────────────────
+        with sub3:
+            st.markdown("##### 🕳️ Research Gap Detector")
+            st.caption(
+                "Analisis multidimensional celah riset. "
+                "4 sub-view terintegrasi: "
+                "**Venn Diagram** · **Heatmap** topik × paper · "
+                "**Gap Score** radar chart · "
+                "**Hidden Findings** + Gap Statement siap-pakai."
+            )
 
-## 🕳️ Celah Riset (dari pola graph)
-[2-3 area yang belum terhubung atau kurang terwakili dalam graph]
+            if st.button("🔨 Deteksi Research Gap",
+                         key="btn_gap", use_container_width=True):
+                with st.spinner("Menganalisis celah riset… (~3 detik)"):
+                    try:
+                        st.session_state.gap_html       = render_gap(papers, height=720)
+                        st.session_state.gap_stats_data = gap_stats(papers)
+                    except Exception as exc:
+                        st.error(f"Gagal mendeteksi Gap: {exc}")
 
-## 💡 Rekomendasi Strategis
-[Saran konkret: paper mana yang harus dibaca pertama, arah riset selanjutnya]"""
+            if st.session_state.gap_html:
+                gs = st.session_state.gap_stats_data or {}
+                st.markdown("---")
 
-                    with st.spinner("Gemini menganalisis pola graph..."):
-                        try:
-                            resp = model.generate_content(graph_prompt)
-                            st.session_state.graph_analysis_text = resp.text
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Gagal: {e}")
+                # ── Metric cards
+                g1, g2, g3, g4 = st.columns(4)
+                g1.metric("Total Keyword",    gs.get("total_keywords",     "—"))
+                g2.metric("Gap Kritis 🔴",    gs.get("critical_gaps",      "—"))
+                g3.metric("Coverage Score",   f"{gs.get('coverage_score_pct', 0)}%")
+                g4.metric("Topik Aman ✅",    f"{gs.get('covered_pct',     0)}%")
+
+                st.markdown("---")
+                gc1, gc2 = st.columns(2)
+                gc1.markdown(
+                    f"**🔴 Gap paling kritis**  \n"
+                    f"_{gs.get('top_gap_keyword', '—')}_"
+                )
+                gc2.markdown(
+                    f"**✅ Topik terlindungi**  \n"
+                    f"_{gs.get('top_covered_keyword', '—')}_"
+                )
+                st.markdown("---")
+
+                st.caption(
+                    "💡 Tab **VENN · HEATMAP · GAP SCORE · HIDDEN FINDINGS** "
+                    "ada di dalam komponen di bawah ini · "
+                    "Tombol **⎘ SALIN** = copy Gap Statement ke clipboard"
+                )
+                components.html(
+                    st.session_state.gap_html, height=740, scrolling=False
+                )
+
+                if st.button("🔄 Rebuild Gap Detector", key="btn_gap_reset"):
+                    st.session_state.gap_html       = None
+                    st.session_state.gap_stats_data = None
+                    st.rerun()
+
+        st.markdown("---")
+        st.markdown(
+            '<div class="warning-box">⚠️ <b>Transparansi:</b> Semua analisis '
+            'berbasis data nyata dari hasil pencarian. '
+            'Tidak ada data yang diinvent oleh AI.</div>',
+            unsafe_allow_html=True
+        )
