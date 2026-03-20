@@ -3,40 +3,21 @@ graph_roadmap.py
 ================
 Research Roadmap — Fitur 1 dari Research Intelligence Center
 
-Mengubah daftar paper menjadi peta perjalanan intelektual horizontal
-yang dapat dinavigasi secara interaktif layaknya command center riset.
-
-Layout:
-  Sumbu X  = tahun publikasi (tertua → terbaru)
-  Sumbu Y  = lapisan pengaruh berdasarkan jumlah sitasi:
-              PIONEER     (>100 sitasi) — lapisan atas
-              ESTABLISHED (20–100)      — lapisan tengah
-              EMERGING    (<20)         — lapisan bawah
-
-Interaksi:
-  · Hover kartu   → tooltip kaya: judul, penulis, abstrak, venue, urutan baca
-  · Klik kartu    → mode fokus: panel detail terbuka
-  · Klik di luar  → tutup focus mode
-  · Slider tahun  → filter real-time tanpa reload
-  · Toggle PATH   → tampilkan / sembunyikan jalur baca rekomendasi
-  · Toggle VENUE  → warna kartu berdasarkan jurnal/konferensi
-  · Toggle EDGE   → tampilkan edge kedekatan antar paper
-  · Zoom In/Out   → tombol + scroll mouse
-  · Pan           → drag canvas
+Filosofi desain:
+  · Kartu besar dan langsung terbaca tanpa perlu zoom
+  · Navigasi = drag horizontal (scroll waktu)
+  · Zoom dikekang: tidak bisa zoom out sampai void kosong
+  · Canvas tingginya pas dengan viewport
 
 Fungsi publik:
-  render_roadmap(papers, height)  → str   (HTML siap embed di Streamlit)
-  roadmap_stats(papers)           → dict  (ringkasan statistik untuk UI)
-  build_roadmap_data(papers)      → dict  (data mentah — untuk testing)
+  render_roadmap(papers, height)  -> str
+  roadmap_stats(papers)           -> dict
+  build_roadmap_data(papers)      -> dict
 """
 
 import json
 from typing import Optional
 
-
-# ─────────────────────────────────────────────────────────────────
-# 1. DATA PROCESSING
-# ─────────────────────────────────────────────────────────────────
 
 def _parse_year(val) -> Optional[int]:
     try:
@@ -58,11 +39,10 @@ def _assign_tier(citations: int) -> str:
 def _compute_reading_path(nodes: list[dict]) -> list[str]:
     if not nodes:
         return []
-    sorted_nodes = sorted(
+    return [n["id"] for n in sorted(
         nodes,
         key=lambda n: (n.get("year", 9999), -n.get("citations", 0))
-    )
-    return [n["id"] for n in sorted_nodes]
+    )]
 
 
 def _build_proximity_edges(nodes: list[dict]) -> list[dict]:
@@ -91,7 +71,6 @@ def build_roadmap_data(papers: list[dict]) -> dict:
             pid = link.split("/paper/")[-1].strip("/")
         else:
             pid = f"p{i}_{p.get('title','x')[:20].replace(' ','_')}"
-
         if pid in seen_ids:
             pid = f"{pid}_{i}"
         seen_ids.add(pid)
@@ -111,7 +90,7 @@ def build_roadmap_data(papers: list[dict]) -> dict:
             "citations":   citations,
             "tier":        tier,
             "venue":       (p.get("venue", "") or "Unknown Venue").strip() or "Unknown Venue",
-            "abstract":    (abstract[:220] + "…") if len(abstract) > 220 else abstract,
+            "abstract":    (abstract[:280] + "…") if len(abstract) > 280 else abstract,
             "link":        link,
             "source":      p.get("source", "unknown"),
         })
@@ -124,8 +103,7 @@ def build_roadmap_data(papers: list[dict]) -> dict:
     for n in nodes:
         tier_counts[n["tier"]] += 1
 
-    seen_v = set()
-    venues = []
+    seen_v, venues = set(), []
     for n in nodes:
         if n["venue"] not in seen_v:
             seen_v.add(n["venue"])
@@ -144,20 +122,15 @@ def build_roadmap_data(papers: list[dict]) -> dict:
 def roadmap_stats(papers: list[dict]) -> dict:
     if not papers:
         return {}
-
     data  = build_roadmap_data(papers)
     nodes = data["nodes"]
     if not nodes:
         return {}
-
-    id_map = {n["id"]: n for n in nodes}
-
+    id_map            = {n["id"]: n for n in nodes}
     most_foundational = max(nodes, key=lambda n: n["citations"], default=None)
     most_recent       = max(nodes, key=lambda n: n["year"],      default=None)
-
     first_id          = data["reading_path"][0] if data["reading_path"] else None
     recommended_first = id_map[first_id]["title_short"] if first_id and first_id in id_map else "-"
-
     yr = data["year_range"]
     return {
         "total_papers":      len(nodes),
@@ -173,25 +146,17 @@ def roadmap_stats(papers: list[dict]) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────
-# 2. HTML RENDERING
-# ─────────────────────────────────────────────────────────────────
-
 def render_roadmap(papers: list[dict], height: int = 680) -> str:
-    """
-    Render Research Roadmap sebagai HTML interaktif penuh.
-    Arsitektur baru:
-      · HTML div cards  = teks presisi, CSS line-clamp, tidak pernah overflow
-      · SVG overlay     = background bands, axis, reading path, edges
-      · Zoom/pan system = mouse wheel + drag + tombol
-    """
     data      = build_roadmap_data(papers)
     data_json = (
         json.dumps(data, ensure_ascii=False)
         .replace('<', r'\u003c')
         .replace('/', r'\/')
     )
+    return _build_html(data_json, height)
 
+
+def _build_html(data_json: str, height: int) -> str:
     return f"""<!DOCTYPE html>
 <html lang="id">
 <head>
@@ -199,951 +164,570 @@ def render_roadmap(papers: list[dict], height: int = 680) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Research Roadmap</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-/* ── Reset ── */
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
 html,body{{
   width:100%;height:{height}px;overflow:hidden;
-  background:#050b1a;color:#c8d6f0;
-  font-family:'DM Sans',sans-serif;
-  user-select:none;
+  background:#06101f;font-family:'Inter',sans-serif;
+  user-select:none;-webkit-user-select:none;
 }}
-
-/* ── Design tokens ── */
 :root{{
-  --bg:         #050b1a;
-  --bg2:        #091525;
-  --border:     rgba(99,162,255,.14);
-  --border-hi:  rgba(99,162,255,.42);
-  --text-hi:    #e8f0ff;
-  --text-mid:   #8daacf;
-  --text-lo:    #4a6588;
-  --accent:     #63a2ff;
-  --path-c:     #f97316;
-  --path-g:     rgba(249,115,22,.5);
-  --mono:       'Share Tech Mono',monospace;
-  --disp:       'Orbitron',monospace;
-  --body:       'DM Sans',sans-serif;
-  --pioneer-c:  #a78bfa;
-  --estab-c:    #22d3ee;
-  --emerg-c:    #60a5fa;
+  --bg:#06101f;--bg-card:#0c1e3a;
+  --border:rgba(99,162,255,.18);--border-hi:rgba(99,162,255,.5);
+  --text-hi:#eaf2ff;--text-mid:#7fa8d0;--text-lo:#3d5e82;
+  --accent:#4d9fff;--path-c:#ff7a1a;
+  --pc:#b39dfa;--ec:#1ee8d6;--mc:#60b0ff;
+  --mono:'JetBrains Mono',monospace;
+  --sans:'Inter',sans-serif;
 }}
-
-/* ── Root wrapper ── */
 #rw{{
   display:flex;flex-direction:column;
   width:100%;height:{height}px;
-  background:var(--bg);
-  position:relative;overflow:hidden;
+  background:var(--bg);position:relative;overflow:hidden;
 }}
-/* scanlines */
 #rw::before{{
-  content:'';position:absolute;inset:0;pointer-events:none;z-index:1;
-  background:repeating-linear-gradient(
-    0deg,transparent,transparent 3px,
-    rgba(0,20,60,.05) 3px,rgba(0,20,60,.05) 4px
-  );
+  content:'';position:absolute;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(ellipse 60% 40% at 20% 50%,rgba(40,60,120,.16) 0%,transparent 70%),
+    radial-gradient(ellipse 50% 35% at 80% 50%,rgba(20,50,100,.12) 0%,transparent 70%);
 }}
-
-/* ── Controls bar ── */
+/* toolbar */
 #ctrl{{
-  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-  padding:8px 16px;min-height:46px;
-  background:rgba(9,21,37,.97);
-  border-bottom:1px solid var(--border);
-  z-index:30;position:relative;flex-shrink:0;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:9px 18px;min-height:48px;
+  background:rgba(6,16,31,.98);border-bottom:1px solid var(--border);
+  z-index:50;position:relative;flex-shrink:0;
 }}
-.c-label{{
-  font-family:var(--mono);font-size:9px;letter-spacing:2.5px;
-  color:var(--text-lo);text-transform:uppercase;white-space:nowrap;
-}}
+.c-lbl{{font-family:var(--mono);font-size:9px;letter-spacing:2.5px;color:var(--text-lo);text-transform:uppercase;white-space:nowrap;}}
 .c-sep{{width:1px;height:22px;background:var(--border);flex-shrink:0;}}
 .c-btn{{
-  display:flex;align-items:center;gap:5px;
-  padding:5px 12px;border-radius:5px;cursor:pointer;
-  font-family:var(--mono);font-size:9.5px;letter-spacing:.8px;
-  color:var(--text-mid);background:transparent;
-  border:1px solid var(--border);
-  transition:all .15s;
+  display:inline-flex;align-items:center;gap:5px;
+  padding:5px 13px;border-radius:5px;cursor:pointer;
+  font-family:var(--mono);font-size:9px;letter-spacing:.8px;
+  color:var(--text-mid);background:transparent;border:1px solid var(--border);
+  transition:all .15s;white-space:nowrap;
 }}
 .c-btn:hover{{border-color:var(--border-hi);color:var(--text-hi);}}
-.c-btn.on{{border-color:var(--path-c);color:var(--path-c);background:rgba(249,115,22,.08);box-shadow:0 0 8px rgba(249,115,22,.18);}}
-.c-btn.on-cyan{{border-color:var(--estab-c);color:var(--estab-c);background:rgba(34,211,238,.07);}}
-.c-btn.on-ind{{border-color:#818cf8;color:#818cf8;background:rgba(129,140,248,.07);}}
-.c-dot{{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0;}}
-
-/* year slider group */
-#yr-grp{{display:flex;align-items:center;gap:8px;flex:1;min-width:160px;}}
-#yr-a,#yr-b{{font-family:var(--mono);font-size:10px;color:var(--accent);min-width:32px;text-align:center;}}
+.c-btn.on{{border-color:var(--path-c);color:var(--path-c);background:rgba(255,122,26,.08);box-shadow:0 0 8px rgba(255,122,26,.2);}}
+.c-btn.on-t{{border-color:var(--ec);color:var(--ec);background:rgba(30,232,214,.07);}}
+.c-btn.on-b{{border-color:var(--mc);color:var(--mc);background:rgba(96,176,255,.07);}}
+.c-dot{{width:7px;height:7px;border-radius:50%;background:currentColor;flex-shrink:0;}}
+#yr-grp{{display:flex;align-items:center;gap:9px;min-width:180px;flex:1;}}
+.yr-v{{
+  font-family:var(--mono);font-size:10px;color:var(--accent);min-width:34px;text-align:center;
+  padding:2px 6px;background:rgba(77,159,255,.08);border-radius:3px;border:1px solid rgba(77,159,255,.2);
+}}
 input[type=range]{{
-  -webkit-appearance:none;height:2px;flex:1;cursor:pointer;
-  background:linear-gradient(90deg,var(--accent),var(--pioneer-c));border-radius:2px;
+  -webkit-appearance:none;appearance:none;height:3px;flex:1;cursor:pointer;border-radius:3px;
+  background:linear-gradient(90deg,var(--accent),var(--pc));
 }}
 input[type=range]::-webkit-slider-thumb{{
-  -webkit-appearance:none;width:12px;height:12px;border-radius:50%;
-  background:var(--accent);border:2px solid var(--bg);box-shadow:0 0 5px var(--accent);
+  -webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+  background:var(--accent);border:2px solid var(--bg);box-shadow:0 0 6px var(--accent);
 }}
-
-/* ── Zoom controls ── */
-#zoom-bar{{
-  position:absolute;bottom:54px;right:14px;z-index:25;
-  display:flex;flex-direction:column;gap:5px;
+/* zoom controls */
+#zm{{
+  position:absolute;top:58px;right:16px;z-index:60;
+  display:flex;flex-direction:column;align-items:center;gap:4px;
 }}
-.z-btn{{
-  width:32px;height:32px;border-radius:6px;cursor:pointer;
-  background:rgba(9,21,37,.9);border:1px solid var(--border);
-  color:var(--text-mid);font-size:16px;line-height:1;
+.zb{{
+  width:34px;height:34px;border-radius:7px;
+  background:rgba(6,22,42,.92);border:1px solid var(--border);
+  color:var(--text-mid);font-size:18px;
   display:flex;align-items:center;justify-content:center;
-  transition:all .15s;
+  cursor:pointer;transition:all .15s;
 }}
-.z-btn:hover{{border-color:var(--border-hi);color:var(--text-hi);background:rgba(99,162,255,.1);}}
-#zoom-pct{{
-  font-family:var(--mono);font-size:8.5px;color:var(--text-lo);
-  text-align:center;letter-spacing:.5px;
-}}
-
-/* ── Viewport (canvas area) ── */
-#vp{{
-  flex:1;position:relative;overflow:hidden;cursor:grab;
-}}
-#vp.dragging{{cursor:grabbing;}}
-
-/* ── World (transformed container) ── */
-#world{{
-  position:absolute;
-  top:0;left:0;
-  transform-origin:0 0;
-  /* width/height set by JS */
-}}
-
-/* ── SVG background layer ── */
-#bg-svg{{
-  position:absolute;top:0;left:0;
-  pointer-events:none;overflow:visible;
-}}
-
-/* SVG classes */
-.tier-lbl{{
-  font-family:var(--mono);font-size:9px;letter-spacing:3px;
-  text-transform:uppercase;dominant-baseline:hanging;
-}}
-.yr-tick{{
-  font-family:var(--mono);font-size:9px;fill:#3d5a78;text-anchor:middle;
-}}
-.cedge{{fill:none;stroke:rgba(99,102,241,.18);transition:opacity .25s;}}
-.cedge.dim{{opacity:.04;}}
+.zb:hover{{background:rgba(77,159,255,.12);border-color:var(--border-hi);color:var(--text-hi);}}
+#zm-pct{{font-family:var(--mono);font-size:8px;color:var(--text-lo);letter-spacing:.5px;padding:2px 4px;}}
+.zb.sm{{font-size:10px;font-family:var(--mono);letter-spacing:.5px;}}
+/* viewport */
+#vp{{flex:1;position:relative;overflow:hidden;cursor:grab;}}
+#vp.drag{{cursor:grabbing;}}
+#world{{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform;}}
+/* svg */
+#bg-svg{{position:absolute;top:0;left:0;pointer-events:none;overflow:visible;}}
+.tier-lbl{{font-family:var(--mono);font-size:10px;letter-spacing:3px;text-transform:uppercase;dominant-baseline:hanging;font-weight:500;}}
+.yr-tick{{font-family:var(--mono);font-size:10px;fill:#2d4a68;text-anchor:middle;}}
+.cedge{{fill:none;stroke:rgba(99,130,255,.18);transition:opacity .25s;}}
+.cedge.dim{{opacity:.03;}}
 .rpath{{
-  fill:none;stroke:var(--path-c);stroke-width:2.2;
-  stroke-dasharray:8 5;stroke-linecap:round;
-  filter:drop-shadow(0 0 4px var(--path-g));
-  animation:march 1.5s linear infinite;
+  fill:none;stroke:var(--path-c);stroke-width:2.5;
+  stroke-dasharray:10 6;stroke-linecap:round;
+  filter:drop-shadow(0 0 5px rgba(255,122,26,.6));
+  animation:march 1.6s linear infinite;
 }}
-@keyframes march{{to{{stroke-dashoffset:-52}}}}
-.pb-c{{fill:var(--path-c);filter:drop-shadow(0 0 4px var(--path-g));}}
-.pb-t{{
-  font-family:var(--mono);font-size:7.5px;font-weight:700;
-  fill:#fff;text-anchor:middle;dominant-baseline:central;pointer-events:none;
+@keyframes march{{to{{stroke-dashoffset:-64}}}}
+.pb-c{{fill:var(--path-c);filter:drop-shadow(0 0 5px rgba(255,122,26,.7));}}
+.pb-t{{font-family:var(--mono);font-size:8.5px;font-weight:700;fill:#fff;text-anchor:middle;dominant-baseline:central;pointer-events:none;}}
+/* cards layer */
+#cl{{position:absolute;top:0;left:0;}}
+/* card */
+.card{{
+  position:absolute;width:220px;
+  background:var(--bg-card);border-radius:10px;
+  border:1.5px solid rgba(99,162,255,.2);
+  padding:12px 13px 11px 17px;
+  cursor:pointer;overflow:hidden;
+  transition:border-color .18s,box-shadow .18s,opacity .22s;
 }}
-
-/* ── HTML Cards layer ── */
-#cards-layer{{
-  position:absolute;top:0;left:0;
-  /* width/height match bg-svg */
+.card::before{{
+  content:'';position:absolute;left:0;top:10px;bottom:10px;
+  width:4px;border-radius:0 3px 3px 0;
+  background:var(--cc,var(--accent));
+  box-shadow:0 0 8px var(--cc,var(--accent));
 }}
-
-/* ── Single card ── */
-.rm-card{{
-  position:absolute;
-  width:182px;
-  box-sizing:border-box;
-  background:#0b1c37;
-  border:1.4px solid rgba(99,162,255,.22);
-  border-radius:8px;
-  padding:8px 10px 7px 13px;
-  cursor:pointer;
-  transition:opacity .22s, border-color .18s, box-shadow .18s;
-  overflow:hidden;
+.card:hover{{border-color:rgba(99,162,255,.55);box-shadow:0 4px 24px rgba(0,0,0,.4),0 0 18px rgba(99,162,255,.1);z-index:10;}}
+.card.focused{{border-color:var(--accent);box-shadow:0 6px 28px rgba(0,0,0,.5),0 0 22px rgba(77,159,255,.2);z-index:20;}}
+.card.dim{{opacity:.1;pointer-events:none;}}
+.card.pioneer{{--cc:var(--pc);border-color:rgba(179,157,250,.25);background:linear-gradient(135deg,#0e1d3e,#0c1a38);}}
+.card.pioneer:hover{{border-color:rgba(179,157,250,.6);box-shadow:0 4px 24px rgba(0,0,0,.5),0 0 18px rgba(179,157,250,.12);}}
+.card.established{{--cc:var(--ec);border-color:rgba(30,232,214,.22);background:linear-gradient(135deg,#091e32,#081828);}}
+.card.established:hover{{border-color:rgba(30,232,214,.55);box-shadow:0 4px 24px rgba(0,0,0,.4),0 0 18px rgba(30,232,214,.1);}}
+.card.emerging{{--cc:var(--mc);border-color:rgba(96,176,255,.18);}}
+.card.vc{{--cc:var(--vc,var(--accent));}}
+/* card content */
+.c-chip{{
+  position:absolute;top:8px;right:9px;
+  font-family:var(--mono);font-size:10px;font-weight:600;
+  padding:3px 8px;border-radius:4px;
+  background:rgba(255,255,255,.05);
+  color:var(--cc,var(--accent));letter-spacing:.5px;
+  border:1px solid rgba(255,255,255,.07);
 }}
-.rm-card:hover{{
-  border-color:rgba(99,162,255,.55);
-  box-shadow:0 0 14px rgba(99,162,255,.14);
-  z-index:10;
+.c-title{{
+  font-family:var(--sans);font-size:13px;font-weight:600;
+  color:var(--text-hi);line-height:1.42;
+  padding-right:42px;margin-top:1px;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+  min-height:54px;
 }}
-.rm-card.dim{{opacity:.12;}}
-.rm-card.focused{{
-  border-color:var(--accent);
-  box-shadow:0 0 18px rgba(99,162,255,.25);
-  z-index:20;
+.c-authors{{
+  font-family:var(--sans);font-size:10.5px;color:var(--text-mid);
+  margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.85;
 }}
-
-/* Card accent bar (left edge, color per tier) */
-.rm-card::before{{
-  content:'';position:absolute;left:0;top:7px;bottom:7px;
-  width:3px;border-radius:0 2px 2px 0;
-  background:var(--card-accent, var(--accent));
-}}
-
-/* Card content */
-.card-year-chip{{
-  position:absolute;top:5px;right:6px;
-  padding:2px 7px;border-radius:3px;
-  font-family:var(--mono);font-size:9.5px;font-weight:600;
-  background:rgba(99,162,255,.1);
-  color:var(--card-accent, var(--accent));
-  letter-spacing:.5px;
-}}
-.card-title{{
-  font-family:var(--body);font-size:11.5px;font-weight:500;
-  color:#d8e8ff;line-height:1.38;
-  margin-top:2px;padding-right:36px;
-  /* show max 3 lines, clip the rest */
-  display:-webkit-box;
-  -webkit-line-clamp:3;
-  -webkit-box-orient:vertical;
-  overflow:hidden;
-}}
-.card-cite{{
-  margin-top:5px;
-  font-family:var(--mono);font-size:8.5px;
-  color:var(--text-lo);letter-spacing:.3px;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-}}
-
-/* Tier-specific card colors */
-.rm-card.pioneer{{
-  --card-accent: var(--pioneer-c);
-  border-color:rgba(167,139,250,.28);
-  background:rgba(11,28,55,.95);
-}}
-.rm-card.pioneer:hover{{border-color:rgba(167,139,250,.6);box-shadow:0 0 16px rgba(167,139,250,.14);}}
-.rm-card.established{{
-  --card-accent: var(--estab-c);
-  border-color:rgba(34,211,238,.22);
-}}
-.rm-card.established:hover{{border-color:rgba(34,211,238,.55);box-shadow:0 0 16px rgba(34,211,238,.12);}}
-.rm-card.emerging{{
-  --card-accent: var(--emerg-c);
-  border-color:rgba(96,165,250,.2);
-}}
-.rm-card.emerging:hover{{border-color:rgba(96,165,250,.5);}}
-
-/* Venue color override */
-.rm-card.venue-colored{{ --card-accent: var(--venue-color, var(--accent)); }}
-
-/* ── Tooltip ── */
+.c-foot{{display:flex;align-items:center;justify-content:space-between;margin-top:7px;}}
+.c-cite{{font-family:var(--mono);font-size:9.5px;color:var(--cc,var(--accent));font-weight:500;letter-spacing:.3px;}}
+.c-src{{font-family:var(--mono);font-size:8px;color:var(--text-lo);padding:2px 6px;background:rgba(255,255,255,.04);border-radius:3px;border:1px solid rgba(255,255,255,.06);}}
+/* tooltip */
 #tt{{
   position:fixed;display:none;pointer-events:none;z-index:9999;
-  background:rgba(4,12,30,.97);
-  border:1px solid rgba(99,162,255,.3);border-radius:10px;
-  padding:14px 16px;max-width:300px;min-width:220px;
-  box-shadow:0 12px 40px rgba(0,0,0,.75),0 0 18px rgba(99,162,255,.07);
-  backdrop-filter:blur(16px);font-size:12px;line-height:1.55;
+  background:rgba(5,14,30,.97);border:1px solid rgba(99,162,255,.32);border-radius:12px;
+  padding:16px 18px;max-width:320px;min-width:240px;
+  box-shadow:0 16px 48px rgba(0,0,0,.8);backdrop-filter:blur(18px);
 }}
-.tt-title{{font-family:var(--body);font-size:12.5px;font-weight:600;color:var(--text-hi);margin-bottom:6px;line-height:1.35;}}
-.tt-meta{{font-family:var(--mono);font-size:9px;color:var(--text-mid);letter-spacing:.3px;margin-bottom:3px;}}
-.tt-badge{{
-  display:inline-block;padding:2px 8px;border-radius:3px;margin:5px 0 7px;
-  font-family:var(--mono);font-size:8px;letter-spacing:1px;
-  text-transform:uppercase;font-weight:700;
-}}
-.tt-badge.pioneer{{background:rgba(167,139,250,.14);color:var(--pioneer-c);border:1px solid rgba(167,139,250,.3);}}
-.tt-badge.established{{background:rgba(34,211,238,.1);color:var(--estab-c);border:1px solid rgba(34,211,238,.25);}}
-.tt-badge.emerging{{background:rgba(96,165,250,.1);color:var(--emerg-c);border:1px solid rgba(96,165,250,.22);}}
-.tt-abs{{font-family:var(--body);font-size:10px;color:var(--text-mid);line-height:1.5;border-top:1px solid rgba(99,162,255,.1);padding-top:6px;margin-top:5px;}}
-.tt-hint{{font-family:var(--mono);font-size:8.5px;color:var(--path-c);margin-top:6px;}}
-
-/* ── Detail panel ── */
+.tt-t{{font-family:var(--sans);font-size:13.5px;font-weight:700;color:var(--text-hi);margin-bottom:8px;line-height:1.35;}}
+.tt-m{{font-family:var(--mono);font-size:9.5px;color:var(--text-mid);letter-spacing:.3px;margin-bottom:4px;}}
+.tt-badge{{display:inline-block;padding:3px 9px;border-radius:4px;margin:6px 0 8px;font-family:var(--mono);font-size:8px;letter-spacing:1px;text-transform:uppercase;font-weight:700;}}
+.tt-badge.pioneer{{background:rgba(179,157,250,.14);color:var(--pc);border:1px solid rgba(179,157,250,.32);}}
+.tt-badge.established{{background:rgba(30,232,214,.1);color:var(--ec);border:1px solid rgba(30,232,214,.28);}}
+.tt-badge.emerging{{background:rgba(96,176,255,.1);color:var(--mc);border:1px solid rgba(96,176,255,.25);}}
+.tt-abs{{font-family:var(--sans);font-size:10.5px;color:var(--text-mid);line-height:1.55;border-top:1px solid rgba(99,162,255,.1);padding-top:8px;margin-top:6px;}}
+.tt-hint{{font-family:var(--mono);font-size:8.5px;color:var(--path-c);margin-top:8px;}}
+/* detail panel */
 #dp{{
-  position:absolute;right:14px;top:56px;width:265px;
-  background:rgba(9,21,37,.97);
-  border:1px solid rgba(99,162,255,.22);border-radius:10px;
-  padding:16px;display:none;z-index:80;
-  backdrop-filter:blur(14px);
-  box-shadow:0 10px 40px rgba(0,0,0,.55);
-  animation:dp-in .2s ease;
+  position:absolute;right:16px;top:60px;width:280px;
+  background:rgba(7,18,36,.98);border:1px solid rgba(99,162,255,.24);border-radius:12px;
+  padding:18px;display:none;z-index:80;backdrop-filter:blur(18px);
+  box-shadow:0 14px 48px rgba(0,0,0,.65);animation:dp-in .2s ease;
 }}
-@keyframes dp-in{{from{{opacity:0;transform:translateX(14px)}}to{{opacity:1;transform:none}}}}
+@keyframes dp-in{{from{{opacity:0;transform:translateX(16px)}}to{{opacity:1;transform:none}}}}
 #dp.vis{{display:block;}}
-.dp-hdr{{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:11px;}}
-.dp-title{{font-family:var(--body);font-size:12px;font-weight:600;color:var(--text-hi);line-height:1.4;flex:1;padding-right:8px;}}
-.dp-x{{cursor:pointer;color:var(--text-lo);font-size:17px;line-height:1;transition:color .15s;}}
+.dp-hdr{{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;}}
+.dp-ttl{{font-family:var(--sans);font-size:13px;font-weight:700;color:var(--text-hi);line-height:1.4;flex:1;padding-right:10px;}}
+.dp-x{{cursor:pointer;color:var(--text-lo);font-size:18px;transition:color .15s;}}
 .dp-x:hover{{color:var(--text-hi);}}
-.dp-row{{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(99,162,255,.08);}}
-.dp-k{{font-family:var(--mono);font-size:8.5px;color:var(--text-lo);letter-spacing:.8px;text-transform:uppercase;}}
-.dp-v{{font-family:var(--mono);font-size:10.5px;color:var(--accent);font-weight:600;}}
-.dp-abs{{font-family:var(--body);font-size:10px;color:var(--text-mid);line-height:1.5;margin:10px 0;}}
-.dp-link{{
-  display:block;width:100%;padding:8px;text-align:center;
-  background:rgba(99,162,255,.07);border:1px solid rgba(99,162,255,.22);
-  border-radius:6px;color:var(--accent);cursor:pointer;
-  font-family:var(--mono);font-size:8.5px;letter-spacing:1.5px;
-  text-transform:uppercase;text-decoration:none;
-  transition:all .15s;
+.dp-row{{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(99,162,255,.07);}}
+.dp-k{{font-family:var(--mono);font-size:8.5px;color:var(--text-lo);letter-spacing:1px;text-transform:uppercase;}}
+.dp-v{{font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:600;}}
+.dp-abs{{font-family:var(--sans);font-size:10.5px;color:var(--text-mid);line-height:1.55;margin:12px 0;}}
+.dp-btn{{
+  display:block;width:100%;padding:9px;text-align:center;
+  background:rgba(77,159,255,.07);border:1px solid rgba(77,159,255,.24);
+  border-radius:7px;color:var(--accent);cursor:pointer;
+  font-family:var(--mono);font-size:9px;letter-spacing:1.5px;
+  text-transform:uppercase;text-decoration:none;transition:all .15s;
 }}
-.dp-link:hover{{background:rgba(99,162,255,.16);border-color:rgba(99,162,255,.45);}}
+.dp-btn:hover{{background:rgba(77,159,255,.18);border-color:rgba(77,159,255,.5);}}
 .dp-path{{
-  display:inline-flex;align-items:center;gap:5px;margin-top:8px;
-  padding:3px 9px;border-radius:4px;
-  background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.28);
-  color:var(--path-c);font-family:var(--mono);font-size:8.5px;
+  display:inline-flex;align-items:center;gap:6px;margin-top:10px;
+  padding:4px 10px;border-radius:4px;
+  background:rgba(255,122,26,.1);border:1px solid rgba(255,122,26,.3);
+  color:var(--path-c);font-family:var(--mono);font-size:9px;
 }}
-
-/* ── Legend ── */
-#leg{{
-  position:absolute;bottom:12px;left:16px;
-  display:flex;align-items:center;gap:16px;z-index:20;
-  pointer-events:none;
-}}
-.leg-i{{display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:8.5px;color:var(--text-lo);}}
-.leg-d{{width:9px;height:9px;border-radius:2px;flex-shrink:0;}}
+/* legend */
+#leg{{position:absolute;bottom:10px;left:18px;display:flex;align-items:center;gap:18px;z-index:20;pointer-events:none;}}
+.li{{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:9px;color:var(--text-lo);}}
+.ld{{width:10px;height:10px;border-radius:2px;flex-shrink:0;}}
+.lh{{font-family:var(--mono);font-size:8px;color:#1e3450;margin-left:10px;}}
 </style>
 </head>
 <body>
 <div id="rw">
-
-  <!-- Controls bar -->
-  <div id="ctrl">
-    <span class="c-label">Research Roadmap ◈</span>
-    <div class="c-sep"></div>
-    <button class="c-btn on"  id="btn-path"  onclick="togglePath()">  <span class="c-dot"></span>READING PATH</button>
-    <button class="c-btn"     id="btn-venue" onclick="toggleVenue()"> <span class="c-dot"></span>VENUE CLUSTER</button>
-    <button class="c-btn"     id="btn-edge"  onclick="toggleEdge()">  <span class="c-dot"></span>CONNECTIONS</button>
-    <div class="c-sep"></div>
-    <div id="yr-grp">
-      <span class="c-label">SPAN</span>
-      <span id="yr-a">—</span>
-      <input type="range" id="sl-min" oninput="onYear()">
-      <input type="range" id="sl-max" oninput="onYear()">
-      <span id="yr-b">—</span>
-    </div>
-    <div class="c-sep"></div>
-    <button class="c-btn" onclick="resetZoom()" title="Reset tampilan">⌖ RESET</button>
+<div id="ctrl">
+  <span class="c-lbl">Research Roadmap ◈</span>
+  <div class="c-sep"></div>
+  <button class="c-btn on"  id="btn-path"  onclick="togglePath()">  <span class="c-dot"></span>READING PATH</button>
+  <button class="c-btn"     id="btn-venue" onclick="toggleVenue()"> <span class="c-dot"></span>VENUE CLUSTER</button>
+  <button class="c-btn"     id="btn-edge"  onclick="toggleEdge()">  <span class="c-dot"></span>CONNECTIONS</button>
+  <div class="c-sep"></div>
+  <div id="yr-grp">
+    <span class="c-lbl">SPAN</span>
+    <span class="yr-v" id="yr-a">—</span>
+    <input type="range" id="sl-min" oninput="onYear()">
+    <input type="range" id="sl-max" oninput="onYear()">
+    <span class="yr-v" id="yr-b">—</span>
   </div>
-
-  <!-- Viewport -->
-  <div id="vp">
-
-    <!-- World (scaled/translated) -->
-    <div id="world">
-      <!-- SVG: bands, axis, edges, path -->
-      <svg id="bg-svg" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <marker id="arr" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto">
-            <path d="M0,0 L0,7 L7,3.5 z" fill="rgba(99,102,241,.3)"/>
-          </marker>
-          <filter id="glow-path" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="3" result="b"/>
-            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-        </defs>
-        <g id="g-bands"></g>
-        <g id="g-axis"></g>
-        <g id="g-edges"></g>
-        <g id="g-path"></g>
-      </svg>
-
-      <!-- HTML Cards -->
-      <div id="cards-layer"></div>
-    </div>
-
-  </div><!-- #vp -->
-
-  <!-- Zoom controls -->
-  <div id="zoom-bar">
-    <div class="z-btn" onclick="zoomBy(1.25)" title="Zoom In">+</div>
-    <div id="zoom-pct">100%</div>
-    <div class="z-btn" onclick="zoomBy(0.8)"  title="Zoom Out">−</div>
+</div>
+<div id="vp">
+  <div id="world">
+    <svg id="bg-svg" xmlns="http://www.w3.org/2000/svg">
+      <g id="g-bands"></g><g id="g-axis"></g>
+      <g id="g-edges"></g><g id="g-path"></g>
+    </svg>
+    <div id="cl"></div>
   </div>
-
-  <!-- Tooltip -->
-  <div id="tt"></div>
-
-  <!-- Detail Panel -->
-  <div id="dp">
-    <div class="dp-hdr">
-      <div class="dp-title" id="dp-title">—</div>
-      <span class="dp-x" onclick="closePanel()">✕</span>
-    </div>
-    <div id="dp-rows"></div>
-    <div class="dp-abs" id="dp-abs">—</div>
-    <a class="dp-link" id="dp-link" href="#" target="_blank">↗ BUKA PAPER LENGKAP</a>
-    <div id="dp-path"></div>
+</div>
+<div id="zm">
+  <div class="zb" onclick="zoomStep(1.18)" title="Zoom In">+</div>
+  <div id="zm-pct">100%</div>
+  <div class="zb" onclick="zoomStep(0.85)" title="Zoom Out">−</div>
+  <div class="zb sm" onclick="fitView()" title="Fit View">FIT</div>
+</div>
+<div id="tt"></div>
+<div id="dp">
+  <div class="dp-hdr">
+    <div class="dp-ttl" id="dp-ttl">—</div>
+    <span class="dp-x" onclick="closePanel()">✕</span>
   </div>
-
-  <!-- Legend -->
-  <div id="leg">
-    <span class="leg-i"><span class="leg-d" style="background:#a78bfa"></span>PIONEER &gt;100 sit.</span>
-    <span class="leg-i"><span class="leg-d" style="background:#22d3ee"></span>ESTABLISHED 20–100</span>
-    <span class="leg-i"><span class="leg-d" style="background:#60a5fa"></span>EMERGING &lt;20</span>
-    <span class="leg-i"><span class="leg-d" style="background:#f97316;border-radius:50%"></span>JALUR BACA</span>
-    <span class="leg-i" style="margin-left:8px;color:#5a7aa0">🖱 Drag=pan · Scroll=zoom</span>
-  </div>
-
-</div><!-- #rw -->
-
+  <div id="dp-rows"></div>
+  <div class="dp-abs" id="dp-abs"></div>
+  <a class="dp-btn" id="dp-link" href="#" target="_blank">↗ BUKA PAPER LENGKAP</a>
+  <div id="dp-path"></div>
+</div>
+<div id="leg">
+  <span class="li"><span class="ld" style="background:#b39dfa"></span>PIONEER &gt;100</span>
+  <span class="li"><span class="ld" style="background:#1ee8d6"></span>ESTABLISHED 20–100</span>
+  <span class="li"><span class="ld" style="background:#60b0ff"></span>EMERGING &lt;20</span>
+  <span class="li"><span class="ld" style="background:#ff7a1a;border-radius:50%"></span>JALUR BACA</span>
+  <span class="lh">← Drag=pan · Scroll=zoom</span>
+</div>
+</div>
 <script>
-/* ════════════════════════════════════════
-   DATA
-════════════════════════════════════════ */
 const D = {data_json};
 
-/* ════════════════════════════════════════
-   LAYOUT CONSTANTS
-════════════════════════════════════════ */
-const CW        = 182;   // card width  (px in virtual space)
-const CH        = 104;   // card height (px in virtual space)
-const GAP_H     = 18;    // min horizontal gap between cards
-const GAP_V     = 12;    // vertical gap between stacked cards
-const YEAR_STEP = 210;   // virtual px per year  ← key spacing constant
-const LEFT_PAD  = 70;
-const RIGHT_PAD = 90;
-const TOP_PAD   = 50;    // space above first band
-const BAND_H    = 220;   // height per tier band
-const AXIS_H    = 52;    // bottom axis area
+/* Layout constants — CARD_W/H besar agar terbaca */
+const CARD_W=220, CARD_H=118;
+const YEAR_STEP=260, GAP_H=20, GAP_V=14;
+const LEFT_PAD=80, RIGHT_PAD=100, TOP_PAD=52, AXIS_H=56;
+const BAND_H = CARD_H*2 + GAP_V*3 + 24;
+const YEAR_MIN=D.year_range[0], YEAR_MAX=D.year_range[1];
+const V_W = LEFT_PAD + (YEAR_MAX-YEAR_MIN)*YEAR_STEP + RIGHT_PAD;
+const V_H = TOP_PAD + 3*BAND_H + AXIS_H + 16;
 
-// Derived virtual canvas size
-const YEAR_MIN = D.year_range[0];
-const YEAR_MAX = D.year_range[1];
-const V_W = LEFT_PAD + (YEAR_MAX - YEAR_MIN) * YEAR_STEP + RIGHT_PAD;
-const V_H = TOP_PAD + 3 * BAND_H + AXIS_H;
+const TIER_CLR = {{pioneer:'#b39dfa',established:'#1ee8d6',emerging:'#60b0ff'}};
+const TIER_NM  = {{pioneer:'PIONEER',established:'ESTABLISHED',emerging:'EMERGING'}};
+const VPALE = ['#f472b6','#fb923c','#facc15','#4ade80','#34d399','#818cf8','#c084fc','#f87171','#a3e635','#38bdf8'];
+const VM={{}};
+D.venues.forEach((v,i)=>VM[v]=VPALE[i%VPALE.length]);
 
-/* ════════════════════════════════════════
-   VENUE COLOR MAP
-════════════════════════════════════════ */
-const VPALE = [
-  '#f472b6','#fb923c','#facc15','#4ade80',
-  '#34d399','#818cf8','#c084fc','#f87171','#a3e635','#38bdf8'
-];
-const venueMap = {{}};
-D.venues.forEach((v,i) => {{ venueMap[v] = VPALE[i % VPALE.length]; }});
+const S={{path:true,venue:false,edges:false,focus:null,yMin:YEAR_MIN,yMax:YEAR_MAX}};
+const Z={{s:1,tx:0,ty:0,ox:0,oy:0,px:0,py:0,down:false}};
 
-const TIER_CLR = {{pioneer:'#a78bfa', established:'#22d3ee', emerging:'#60a5fa'}};
-const TIER_NM  = {{pioneer:'PIONEER', established:'ESTABLISHED', emerging:'EMERGING'}};
-
-/* ════════════════════════════════════════
-   STATE
-════════════════════════════════════════ */
-const S = {{
-  path:    true,
-  venue:   false,
-  edges:   false,
-  focus:   null,
-  yMin:    YEAR_MIN,
-  yMax:    YEAR_MAX,
-}};
-
-/* ════════════════════════════════════════
-   ZOOM / PAN STATE
-════════════════════════════════════════ */
-const Z = {{
-  scale: 1,
-  tx: 0,
-  ty: 0,
-  dragging: false,
-  startX: 0, startY: 0,
-  startTx: 0, startTy: 0,
-}};
-
-function applyTransform() {{
-  document.getElementById('world').style.transform =
-    `translate(${{Z.tx}}px,${{Z.ty}}px) scale(${{Z.scale}})`;
-  document.getElementById('zoom-pct').textContent =
-    Math.round(Z.scale * 100) + '%';
+function vpW(){{return document.getElementById('vp').clientWidth;}}
+function vpH(){{return document.getElementById('vp').clientHeight;}}
+function minS(){{return Math.max(vpW()/V_W, vpH()/V_H)*0.98;}}
+function clampS(s){{return Math.max(minS(),Math.min(3,s));}}
+function clampXY(s,tx,ty){{
+  return {{
+    tx:Math.min(0,Math.max(vpW()-V_W*s,tx)),
+    ty:Math.min(0,Math.max(vpH()-V_H*s,ty))
+  }};
+}}
+function applyZ(){{
+  const {{tx,ty}}=clampXY(Z.s,Z.tx,Z.ty);
+  Z.tx=tx;Z.ty=ty;
+  document.getElementById('world').style.transform=`translate(${{tx}}px,${{ty}}px) scale(${{Z.s}})`;
+  document.getElementById('zm-pct').textContent=Math.round(Z.s*100)+'%';
+}}
+function zoomAt(f,cx,cy){{
+  const ns=clampS(Z.s*f), r=ns/Z.s;
+  Z.tx=cx-(cx-Z.tx)*r; Z.ty=cy-(cy-Z.ty)*r; Z.s=ns; applyZ();
+}}
+function zoomStep(f){{
+  const r=document.getElementById('vp').getBoundingClientRect();
+  zoomAt(f,r.width/2,r.height/2);
+}}
+function fitView(){{
+  Z.s=clampS(Math.min(vpW()/V_W,vpH()/V_H)*0.96);
+  Z.tx=(vpW()-V_W*Z.s)/2; Z.ty=(vpH()-V_H*Z.s)/2; applyZ();
+}}
+function initZoom(){{
+  /* Start at scale where cards fill the height and are readable */
+  Z.s=clampS(Math.max(0.72, vpH()/V_H*0.97));
+  Z.tx=0; Z.ty=(vpH()-V_H*Z.s)/2;
+  const {{tx,ty}}=clampXY(Z.s,Z.tx,Z.ty);
+  Z.tx=tx;Z.ty=ty;applyZ();
 }}
 
-function clampZoom(s) {{ return Math.max(0.25, Math.min(4, s)); }}
-
-function zoomBy(factor, pivotX, pivotY) {{
-  const vp = document.getElementById('vp');
-  const rect = vp.getBoundingClientRect();
-  const px = (pivotX !== undefined) ? pivotX : rect.width  / 2;
-  const py = (pivotY !== undefined) ? pivotY : rect.height / 2;
-
-  const newScale = clampZoom(Z.scale * factor);
-  const ratio    = newScale / Z.scale;
-  Z.tx = px - (px - Z.tx) * ratio;
-  Z.ty = py - (py - Z.ty) * ratio;
-  Z.scale = newScale;
-  applyTransform();
-}}
-
-function resetZoom() {{
-  // Fit virtual canvas into viewport
-  const vp   = document.getElementById('vp');
-  const vpW  = vp.clientWidth;
-  const vpH  = vp.clientHeight;
-  const sX   = vpW / V_W;
-  const sY   = vpH / V_H;
-  Z.scale = clampZoom(Math.min(sX, sY) * 0.92);
-  Z.tx = (vpW - V_W * Z.scale) / 2;
-  Z.ty = (vpH - V_H * Z.scale) / 2;
-  applyTransform();
-}}
-
-/* ── Wheel zoom ── */
-document.getElementById('vp').addEventListener('wheel', e => {{
+document.getElementById('vp').addEventListener('wheel',e=>{{
   e.preventDefault();
-  const rect = document.getElementById('vp').getBoundingClientRect();
-  const px = e.clientX - rect.left;
-  const py = e.clientY - rect.top;
-  zoomBy(e.deltaY < 0 ? 1.12 : 0.89, px, py);
-}}, {{passive: false}});
+  const r=document.getElementById('vp').getBoundingClientRect();
+  zoomAt(e.deltaY<0?1.1:0.91,e.clientX-r.left,e.clientY-r.top);
+}},{{passive:false}});
 
-/* ── Drag pan ── */
-const vp = document.getElementById('vp');
-vp.addEventListener('mousedown', e => {{
-  if (e.button !== 0) return;
-  Z.dragging = true;
-  Z.startX = e.clientX; Z.startY = e.clientY;
-  Z.startTx = Z.tx;     Z.startTy = Z.ty;
-  vp.classList.add('dragging');
+const vpEl=document.getElementById('vp');
+vpEl.addEventListener('mousedown',e=>{{
+  if(e.button!==0)return;
+  Z.down=true;Z.px=e.clientX;Z.py=e.clientY;Z.ox=Z.tx;Z.oy=Z.ty;
+  vpEl.classList.add('drag');
 }});
-window.addEventListener('mousemove', e => {{
-  if (!Z.dragging) return;
-  Z.tx = Z.startTx + (e.clientX - Z.startX);
-  Z.ty = Z.startTy + (e.clientY - Z.startY);
-  applyTransform();
+window.addEventListener('mousemove',e=>{{
+  if(!Z.down)return;
+  Z.tx=Z.ox+(e.clientX-Z.px);Z.ty=Z.oy+(e.clientY-Z.py);applyZ();
 }});
-window.addEventListener('mouseup', () => {{
-  Z.dragging = false;
-  vp.classList.remove('dragging');
-}});
+window.addEventListener('mouseup',()=>{{Z.down=false;vpEl.classList.remove('drag');}});
 
-/* ── Touch pan/pinch ── */
-let _touches = [];
-vp.addEventListener('touchstart', e => {{
-  _touches = [...e.touches];
-}}, {{passive: true}});
-vp.addEventListener('touchmove', e => {{
-  if (e.touches.length === 1 && _touches.length === 1) {{
-    const dx = e.touches[0].clientX - _touches[0].clientX;
-    const dy = e.touches[0].clientY - _touches[0].clientY;
-    Z.tx += dx; Z.ty += dy;
-    applyTransform();
-    _touches = [...e.touches];
-  }} else if (e.touches.length === 2 && _touches.length === 2) {{
-    const d0 = Math.hypot(_touches[0].clientX-_touches[1].clientX,
-                          _touches[0].clientY-_touches[1].clientY);
-    const d1 = Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
-                          e.touches[0].clientY-e.touches[1].clientY);
-    zoomBy(d1/d0);
-    _touches = [...e.touches];
+let _tc=[];
+vpEl.addEventListener('touchstart',e=>{{_tc=[...e.touches];}},{{passive:true}});
+vpEl.addEventListener('touchmove',e=>{{
+  if(e.touches.length===1&&_tc.length>=1){{
+    Z.tx+=e.touches[0].clientX-_tc[0].clientX;
+    Z.ty+=e.touches[0].clientY-_tc[0].clientY;applyZ();
+  }}else if(e.touches.length===2&&_tc.length===2){{
+    const d0=Math.hypot(_tc[0].clientX-_tc[1].clientX,_tc[0].clientY-_tc[1].clientY);
+    const d1=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+    if(d0>0)zoomAt(d1/d0,vpW()/2,vpH()/2);
   }}
-}}, {{passive: true}});
+  _tc=[...e.touches];
+}},{{passive:true}});
 
-/* ════════════════════════════════════════
-   HELPERS
-════════════════════════════════════════ */
-function ns(tag, attrs={{}}) {{
-  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
-  Object.entries(attrs).forEach(([k,v]) => el.setAttribute(k,v));
-  return el;
+function ns(t,a={{}}){{
+  const el=document.createElementNS('http://www.w3.org/2000/svg',t);
+  Object.entries(a).forEach(([k,v])=>el.setAttribute(k,v));return el;
 }}
-
-function esc(s) {{
-  return String(s == null ? '' : s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function esc(s){{
+  return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }}
+function xOf(y){{return LEFT_PAD+(y-YEAR_MIN)*YEAR_STEP;}}
+function bTop(t){{return TOP_PAD+{{pioneer:0,established:1,emerging:2}}[t]*BAND_H;}}
+function bMid(t){{return bTop(t)+BAND_H/2;}}
+function visSet(){{return new Set(D.nodes.filter(n=>n.year>=S.yMin&&n.year<=S.yMax).map(n=>n.id));}}
 
-function virtualX(year) {{
-  return LEFT_PAD + (year - YEAR_MIN) * YEAR_STEP;
-}}
-
-function tierBandTop(tier) {{
-  return TOP_PAD + {{pioneer:0, established:1, emerging:2}}[tier] * BAND_H;
-}}
-
-function tierBandCY(tier) {{
-  return tierBandTop(tier) + BAND_H / 2;
-}}
-
-/* ════════════════════════════════════════
-   LAYOUT — collision-free card placement
-════════════════════════════════════════ */
-function computeLayout(nodes) {{
-  const MAX_PER_COL = Math.max(1, Math.floor((BAND_H - 30) / (CH + GAP_V)));
-  const pos = {{}};
-
-  ['pioneer','established','emerging'].forEach(tier => {{
-    const cards = nodes.filter(n => n.tier === tier);
-    if (!cards.length) return;
-
-    // Sort by year ASC, then citations DESC
-    cards.sort((a,b) => a.year !== b.year
-      ? a.year - b.year
-      : b.citations - a.citations
-    );
-
-    // Group same-year cards
-    const yearGroups = {{}};
-    cards.forEach(n => {{
-      (yearGroups[n.year] = yearGroups[n.year]||[]).push(n);
-    }});
-    const years = Object.keys(yearGroups).map(Number).sort((a,b)=>a-b);
-
-    let prevRight = -Infinity; // right edge of previous year-group
-
-    years.forEach(year => {{
-      const group = yearGroups[year];
-      const nCols = Math.ceil(group.length / MAX_PER_COL);
-      const groupW = nCols * CW + (nCols-1) * GAP_H;
-
-      // Ideal center X for this year
-      const idealCX = virtualX(year);
-      // Actual start X: never overlap previous group
-      const startX = Math.max(idealCX - groupW/2, prevRight + GAP_H);
-
-      const bandCY = tierBandCY(tier);
-
-      group.forEach((n, gi) => {{
-        const col = Math.floor(gi / MAX_PER_COL);
-        const row = gi % MAX_PER_COL;
-        const colSize = Math.min(MAX_PER_COL, group.length - col * MAX_PER_COL);
-        const colH = colSize * CH + (colSize-1) * GAP_V;
-
-        const cx = startX + col * (CW + GAP_H) + CW/2;
-        const cy = bandCY - colH/2 + row * (CH + GAP_V) + CH/2;
-
-        pos[n.id] = {{
-          left: cx - CW/2,
-          top:  cy - CH/2,
-          cx, cy
-        }};
+function doLayout(nodes){{
+  const mpc=Math.max(1,Math.floor((BAND_H-30)/(CARD_H+GAP_V)));
+  const pos={{}};
+  ['pioneer','established','emerging'].forEach(tier=>{{
+    const grp=nodes.filter(n=>n.tier===tier);
+    if(!grp.length)return;
+    grp.sort((a,b)=>a.year!==b.year?a.year-b.year:b.citations-a.citations);
+    const by={{}};
+    grp.forEach(n=>(by[n.year]=by[n.year]||[]).push(n));
+    const years=Object.keys(by).map(Number).sort((a,b)=>a-b);
+    let prevR=-Infinity;
+    years.forEach(yr=>{{
+      const g=by[yr];
+      const nc=Math.ceil(g.length/mpc);
+      const gW=nc*CARD_W+(nc-1)*GAP_H;
+      const startX=Math.max(xOf(yr)-gW/2, prevR+GAP_H);
+      const bm=bMid(tier);
+      g.forEach((n,i)=>{{
+        const col=Math.floor(i/mpc),row=i%mpc;
+        const cs=Math.min(mpc,g.length-col*mpc);
+        const ch=cs*CARD_H+(cs-1)*GAP_V;
+        const cx=startX+col*(CARD_W+GAP_H)+CARD_W/2;
+        const cy=bm-ch/2+row*(CARD_H+GAP_V)+CARD_H/2;
+        pos[n.id]={{left:cx-CARD_W/2,top:cy-CARD_H/2,cx,cy}};
       }});
-
-      prevRight = startX + groupW;
+      prevR=startX+gW;
     }});
   }});
-
   return pos;
 }}
 
-/* ════════════════════════════════════════
-   VISIBLE SET (year filter)
-════════════════════════════════════════ */
-function visibleSet() {{
-  return new Set(
-    D.nodes.filter(n => n.year >= S.yMin && n.year <= S.yMax).map(n => n.id)
-  );
-}}
-
-/* ════════════════════════════════════════
-   RENDER: SVG BACKGROUND
-════════════════════════════════════════ */
-function renderBands() {{
-  const g = document.getElementById('g-bands');
-  g.innerHTML = '';
-
-  const bandAlpha = {{
-    pioneer:     'rgba(167,139,250,.03)',
-    established: 'rgba(34,211,238,.025)',
-    emerging:    'rgba(96,165,250,.02)'
-  }};
-
-  ['pioneer','established','emerging'].forEach((t, i) => {{
-    const ty = tierBandTop(t);
-    // Band fill
-    g.appendChild(ns('rect',{{
-      x:0, y:ty, width:V_W, height:BAND_H,
-      fill: bandAlpha[t]
-    }}));
-    // Divider
-    if (i > 0) {{
-      g.appendChild(ns('line',{{
-        x1:0, y1:ty, x2:V_W, y2:ty,
-        stroke:'rgba(99,162,255,.07)','stroke-dasharray':'4 10'
-      }}));
-    }}
-    // Tier label
-    const lbl = ns('text',{{
-      x:10, y:ty+14,
-      class:'tier-lbl',
-      fill: TIER_CLR[t], opacity:'.5'
-    }});
-    lbl.textContent = TIER_NM[t];
-    g.appendChild(lbl);
+function drawBands(){{
+  const g=document.getElementById('g-bands');g.innerHTML='';
+  const fa={{pioneer:'rgba(179,157,250,.028)',established:'rgba(30,232,214,.022)',emerging:'rgba(96,176,255,.018)'}};
+  ['pioneer','established','emerging'].forEach((t,i)=>{{
+    const ty=bTop(t);
+    g.appendChild(ns('rect',{{x:0,y:ty,width:V_W,height:BAND_H,fill:fa[t]}}));
+    if(i>0)g.appendChild(ns('line',{{x1:0,y1:ty,x2:V_W,y2:ty,stroke:'rgba(99,162,255,.06)','stroke-dasharray':'5 12'}}));
+    const lb=ns('text',{{x:14,y:ty+14,class:'tier-lbl',fill:TIER_CLR[t],opacity:'.5'}});
+    lb.textContent=TIER_NM[t];g.appendChild(lb);
   }});
-
-  // Vertical year gridlines
-  for (let y = YEAR_MIN+1; y <= YEAR_MAX-1; y++) {{
-    const x = virtualX(y);
-    g.appendChild(ns('line',{{
-      x1:x, y1:TOP_PAD, x2:x, y2:V_H - AXIS_H,
-      stroke:'rgba(99,162,255,.05)'
-    }}));
+  for(let y=YEAR_MIN+1;y<=YEAR_MAX-1;y++){{
+    const x=xOf(y);
+    g.appendChild(ns('line',{{x1:x,y1:TOP_PAD,x2:x,y2:V_H-AXIS_H,stroke:'rgba(99,162,255,.04)'}}));
   }}
 }}
 
-function renderAxis() {{
-  const g = document.getElementById('g-axis');
-  g.innerHTML = '';
-  const ay = V_H - AXIS_H;
-
-  g.appendChild(ns('line',{{
-    x1:LEFT_PAD/2, y1:ay, x2:V_W - RIGHT_PAD/2, y2:ay,
-    stroke:'rgba(99,162,255,.15)'
-  }}));
-
-  for (let y = YEAR_MIN+1; y <= YEAR_MAX-1; y++) {{
-    const x = virtualX(y);
-    g.appendChild(ns('line',{{x1:x,y1:ay,x2:x,y2:ay+5,stroke:'rgba(99,162,255,.2)'}}));
-    const t = ns('text',{{x, y:ay+18, class:'yr-tick'}});
-    t.textContent = y;
-    g.appendChild(t);
+function drawAxis(){{
+  const g=document.getElementById('g-axis');g.innerHTML='';
+  const ay=V_H-AXIS_H;
+  g.appendChild(ns('line',{{x1:LEFT_PAD/2,y1:ay,x2:V_W-RIGHT_PAD/2,y2:ay,stroke:'rgba(99,162,255,.16)'}}));
+  for(let y=YEAR_MIN+1;y<=YEAR_MAX-1;y++){{
+    const x=xOf(y);
+    g.appendChild(ns('line',{{x1:x,y1:ay,x2:x,y2:ay+6,stroke:'rgba(99,162,255,.22)'}}));
+    const t=ns('text',{{x,y:ay+20,class:'yr-tick'}});t.textContent=y;g.appendChild(t);
   }}
 }}
 
-/* ════════════════════════════════════════
-   RENDER: EDGES
-════════════════════════════════════════ */
-function renderEdges(pos) {{
-  const g = document.getElementById('g-edges');
-  g.innerHTML = '';
-  if (!S.edges) return;
-
-  const vis = visibleSet();
-  D.edges.forEach(e => {{
-    if (!vis.has(e.source) || !vis.has(e.target)) return;
-    const a = pos[e.source], b = pos[e.target];
-    if (!a || !b) return;
-
-    const mx = (a.cx + b.cx) / 2;
-    const p = ns('path', {{
-      d:`M${{a.cx}},${{a.cy}} C${{mx}},${{a.cy}} ${{mx}},${{b.cy}} ${{b.cx}},${{b.cy}}`,
-      class:'cedge',
-      'stroke-width': Math.max(.5, e.weight * 2),
-      'marker-end':'url(#arr)'
-    }});
-    p.dataset.src = e.source;
-    p.dataset.tgt = e.target;
+function drawEdges(pos){{
+  const g=document.getElementById('g-edges');g.innerHTML='';
+  if(!S.edges)return;
+  const vis=visSet();
+  D.edges.forEach(e=>{{
+    if(!vis.has(e.source)||!vis.has(e.target))return;
+    const a=pos[e.source],b=pos[e.target];if(!a||!b)return;
+    const mx=(a.cx+b.cx)/2;
+    const p=ns('path',{{d:`M${{a.cx}},${{a.cy}} C${{mx}},${{a.cy}} ${{mx}},${{b.cy}} ${{b.cx}},${{b.cy}}`,class:'cedge','stroke-width':Math.max(.6,e.weight*2.2)}});
+    if(S.focus&&e.source!==S.focus&&e.target!==S.focus)p.classList.add('dim');
     g.appendChild(p);
   }});
 }}
 
-/* ════════════════════════════════════════
-   RENDER: READING PATH
-════════════════════════════════════════ */
-function renderPath(pos) {{
-  const g = document.getElementById('g-path');
-  g.innerHTML = '';
-  if (!S.path) return;
-
-  const vis = visibleSet();
-  const ids = D.reading_path.filter(id => vis.has(id));
-  const pts = ids.map(id => pos[id]).filter(Boolean);
-  if (pts.length < 2) return;
-
-  // Smooth bezier through bottom of cards
-  const by = pt => pt.cy + CH/2 + 8;
-  let d = `M${{pts[0].cx}},${{by(pts[0])}}`;
-  for (let i = 1; i < pts.length; i++) {{
-    const a = pts[i-1], b = pts[i];
-    const mx = (a.cx + b.cx) / 2;
-    d += ` C${{mx}},${{by(a)}} ${{mx}},${{by(b)}} ${{b.cx}},${{by(b)}}`;
+function drawPath(pos){{
+  const g=document.getElementById('g-path');g.innerHTML='';
+  if(!S.path)return;
+  const vis=visSet();
+  const ids=D.reading_path.filter(id=>vis.has(id));
+  const pts=ids.map(id=>pos[id]).filter(Boolean);
+  if(pts.length<2)return;
+  const bot=p=>p.cy+CARD_H/2+10;
+  let d=`M${{pts[0].cx}},${{bot(pts[0])}}`;
+  for(let i=1;i<pts.length;i++){{
+    const a=pts[i-1],b=pts[i];const mx=(a.cx+b.cx)/2;
+    d+=` C${{mx}},${{bot(a)}} ${{mx}},${{bot(b)}} ${{b.cx}},${{bot(b)}}`;
   }}
-  g.appendChild(ns('path',{{d, class:'rpath', filter:'url(#glow-path)'}}));
-
-  // Numbered badges
-  ids.forEach((id, i) => {{
-    const p = pos[id];
-    if (!p) return;
-    const cy = by(p);
-    g.appendChild(ns('circle',{{cx:p.cx, cy, r:10, class:'pb-c'}}));
-    const t = ns('text',{{x:p.cx, y:cy, class:'pb-t'}});
-    t.textContent = i+1;
-    g.appendChild(t);
+  g.appendChild(ns('path',{{d,class:'rpath'}}));
+  ids.forEach((id,i)=>{{
+    const p=pos[id];if(!p)return;
+    const cy=bot(p);
+    g.appendChild(ns('circle',{{cx:p.cx,cy,r:11,class:'pb-c'}}));
+    const t=ns('text',{{x:p.cx,y:cy,class:'pb-t'}});t.textContent=i+1;g.appendChild(t);
   }});
 }}
 
-/* ════════════════════════════════════════
-   RENDER: HTML CARDS
-════════════════════════════════════════ */
-function renderCards(pos) {{
-  const layer = document.getElementById('cards-layer');
-  layer.innerHTML = '';
-
-  const vis = visibleSet();
-  const nodes = D.nodes.filter(n => vis.has(n.id));
-
-  nodes.forEach(n => {{
-    const p = pos[n.id];
-    if (!p) return;
-
-    const tierColor = TIER_CLR[n.tier];
-    const venueColor = venueMap[n.venue] || tierColor;
-    const cardColor = S.venue ? venueColor : tierColor;
-
-    const div = document.createElement('div');
-    div.className = `rm-card ${{n.tier}}${{S.venue ? ' venue-colored' : ''}}${{S.focus===n.id ? ' focused' : ''}}`;
-    div.dataset.id = n.id;
-    div.style.left  = p.left + 'px';
-    div.style.top   = p.top  + 'px';
-    if (S.venue) div.style.setProperty('--venue-color', venueColor);
-    if (S.focus && S.focus !== n.id) div.classList.add('dim');
-
-    div.innerHTML = `
-      <div class="card-year-chip">${{n.year}}</div>
-      <div class="card-title">${{esc(n.title)}}</div>
-      <div class="card-cite">↑ ${{n.citations.toLocaleString()}} &nbsp;·&nbsp; ${{esc(n.source)}}</div>
-    `;
-
-    // Events
-    div.addEventListener('mouseenter', e => showTT(e, n, cardColor));
-    div.addEventListener('mouseleave', hideTT);
-    div.addEventListener('click', e => {{ e.stopPropagation(); openPanel(n); }});
+function drawCards(pos){{
+  const layer=document.getElementById('cl');layer.innerHTML='';
+  const vis=visSet();
+  D.nodes.filter(n=>vis.has(n.id)).forEach(n=>{{
+    const p=pos[n.id];if(!p)return;
+    const tc=TIER_CLR[n.tier];
+    const cc=S.venue?(VM[n.venue]||tc):tc;
+    const iF=S.focus===n.id;
+    const iD=S.focus&&!iF;
+    const au=(n.authors||'').split(',').slice(0,2).join(', ')+((n.authors||'').split(',').length>2?' et al.':'');
+    const div=document.createElement('div');
+    div.className=`card ${{n.tier}}${{S.venue?' vc':''}}${{iF?' focused':''}}${{iD?' dim':''}}`;
+    div.dataset.id=n.id;
+    div.style.left=p.left+'px';div.style.top=p.top+'px';
+    if(S.venue)div.style.setProperty('--vc',cc);
+    div.innerHTML=`
+      <div class="c-chip">${{n.year}}</div>
+      <div class="c-title">${{esc(n.title)}}</div>
+      <div class="c-authors">${{esc(au)}}</div>
+      <div class="c-foot">
+        <span class="c-cite">↑ ${{n.citations.toLocaleString()}}</span>
+        <span class="c-src">${{esc(n.source)}}</span>
+      </div>`;
+    div.addEventListener('mouseenter',ev=>showTip(ev,n,cc));
+    div.addEventListener('mouseleave',()=>hideTip());
+    div.addEventListener('click',ev=>{{ev.stopPropagation();openPanel(n);}});
     layer.appendChild(div);
   }});
 }}
 
-/* ════════════════════════════════════════
-   TOOLTIP
-════════════════════════════════════════ */
-function showTT(ev, n, color) {{
-  const tt  = document.getElementById('tt');
-  const pi  = D.reading_path.indexOf(n.id);
-  tt.innerHTML = `
-    <div class="tt-title">${{esc(n.title)}}</div>
-    <div class="tt-meta">👤 ${{esc(n.authors.split(',').slice(0,2).join(', '))}}</div>
-    <div class="tt-meta">📅 ${{n.year}} &nbsp;·&nbsp; ↑ ${{n.citations.toLocaleString()}} sitasi</div>
-    <div class="tt-meta">🏛 ${{esc(n.venue)}}</div>
+function showTip(ev,n,color){{
+  const pi=D.reading_path.indexOf(n.id);
+  const tt=document.getElementById('tt');
+  tt.innerHTML=`
+    <div class="tt-t">${{esc(n.title)}}</div>
+    <div class="tt-m">👤 ${{esc((n.authors||'').split(',').slice(0,2).join(', '))}}</div>
+    <div class="tt-m">📅 ${{n.year}} · ↑ ${{n.citations.toLocaleString()}} sitasi</div>
+    <div class="tt-m">🏛 ${{esc(n.venue)}}</div>
     <span class="tt-badge ${{n.tier}}">${{TIER_NM[n.tier]}}</span>
     <div class="tt-abs">${{esc(n.abstract)}}</div>
-    ${{pi>=0 ? `<div class="tt-hint">📍 Urutan Baca #${{pi+1}} dari ${{D.reading_path.length}}</div>` : ''}}
-    <div class="tt-hint" style="color:var(--accent)">🖱 Klik untuk detail lengkap</div>
+    ${{pi>=0?`<div class="tt-hint">📍 Urutan Baca #${{pi+1}} dari ${{D.reading_path.length}}</div>`:''}}
+    <div class="tt-hint" style="color:var(--accent);margin-top:5px">🖱 Klik untuk detail lengkap</div>
   `;
-  const mx = ev.clientX + 16;
-  const my = ev.clientY - 10;
-  const W  = window.innerWidth;
-  const H  = window.innerHeight;
-  tt.style.cssText = `display:block;left:${{mx+310>W?ev.clientX-320:mx}}px;top:${{my+280>H?ev.clientY-280:my}}px`;
+  const W=window.innerWidth,H=window.innerHeight;
+  const lx=ev.clientX+18,ly=ev.clientY-12;
+  tt.style.cssText=`display:block;left:${{lx+330>W?ev.clientX-340:lx}}px;top:${{ly+340>H?ev.clientY-350:ly}}px`;
 }}
-function hideTT() {{ document.getElementById('tt').style.display='none'; }}
+function hideTip(){{document.getElementById('tt').style.display='none';}}
 
-/* ════════════════════════════════════════
-   DETAIL PANEL
-════════════════════════════════════════ */
-function openPanel(n) {{
-  S.focus = n.id;
-
-  const pi = D.reading_path.indexOf(n.id);
-  document.getElementById('dp-title').textContent = n.title;
-  document.getElementById('dp-abs').textContent   = n.abstract;
-  document.getElementById('dp-link').href         = n.link || '#';
-
-  document.getElementById('dp-rows').innerHTML = `
-    <div class="dp-row"><span class="dp-k">TAHUN</span>  <span class="dp-v">${{n.year}}</span></div>
-    <div class="dp-row"><span class="dp-k">SITASI</span> <span class="dp-v">${{n.citations.toLocaleString()}}</span></div>
-    <div class="dp-row"><span class="dp-k">TIER</span>   <span class="dp-v" style="color:${{TIER_CLR[n.tier]}}">${{TIER_NM[n.tier]}}</span></div>
-    <div class="dp-row"><span class="dp-k">VENUE</span>  <span class="dp-v" style="font-size:9px">${{esc(n.venue.substring(0,32))}}</span></div>
+function openPanel(n){{
+  S.focus=n.id;
+  const pi=D.reading_path.indexOf(n.id);
+  document.getElementById('dp-ttl').textContent=n.title;
+  document.getElementById('dp-abs').textContent=n.abstract;
+  document.getElementById('dp-link').href=n.link||'#';
+  document.getElementById('dp-rows').innerHTML=`
+    <div class="dp-row"><span class="dp-k">TAHUN</span><span class="dp-v">${{n.year}}</span></div>
+    <div class="dp-row"><span class="dp-k">SITASI</span><span class="dp-v">${{n.citations.toLocaleString()}}</span></div>
+    <div class="dp-row"><span class="dp-k">TIER</span><span class="dp-v" style="color:${{TIER_CLR[n.tier]}}">${{TIER_NM[n.tier]}}</span></div>
+    <div class="dp-row"><span class="dp-k">PENULIS</span><span class="dp-v" style="font-size:9px;max-width:160px;text-align:right;line-height:1.3">${{esc((n.authors||'').substring(0,60))}}</span></div>
+    <div class="dp-row"><span class="dp-k">VENUE</span><span class="dp-v" style="font-size:9px;max-width:160px;text-align:right;line-height:1.3">${{esc(n.venue.substring(0,40))}}</span></div>
   `;
-
-  document.getElementById('dp-path').innerHTML = pi >= 0
-    ? `<div class="dp-path">📍 Urutan Baca #${{pi+1}} dari ${{D.reading_path.length}}</div>`
-    : '';
-
+  document.getElementById('dp-path').innerHTML=pi>=0
+    ?`<div class="dp-path">📍 Urutan Baca #${{pi+1}} dari ${{D.reading_path.length}}</div>`:'';
   document.getElementById('dp').classList.add('vis');
-  renderAll(); // redraw with dim effect
+  renderAll();
 }}
-
-function closePanel() {{
-  S.focus = null;
+function closePanel(){{
+  S.focus=null;
   document.getElementById('dp').classList.remove('vis');
   renderAll();
 }}
 
-/* ════════════════════════════════════════
-   CONTROLS
-════════════════════════════════════════ */
-function togglePath() {{
-  S.path = !S.path;
-  document.getElementById('btn-path').className = 'c-btn' + (S.path ? ' on' : '');
-  renderAll();
-}}
-function toggleVenue() {{
-  S.venue = !S.venue;
-  document.getElementById('btn-venue').className = 'c-btn' + (S.venue ? ' on-cyan' : '');
-  renderAll();
-}}
-function toggleEdge() {{
-  S.edges = !S.edges;
-  document.getElementById('btn-edge').className = 'c-btn' + (S.edges ? ' on-ind' : '');
-  renderAll();
-}}
-function onYear() {{
-  let a = +document.getElementById('sl-min').value;
-  let b = +document.getElementById('sl-max').value;
-  if (a > b) {{ a = b; document.getElementById('sl-min').value = a; }}
-  S.yMin = a; S.yMax = b;
-  document.getElementById('yr-a').textContent = a;
-  document.getElementById('yr-b').textContent = b;
+function togglePath(){{S.path=!S.path;document.getElementById('btn-path').className='c-btn'+(S.path?' on':'');renderAll();}}
+function toggleVenue(){{S.venue=!S.venue;document.getElementById('btn-venue').className='c-btn'+(S.venue?' on-t':'');renderAll();}}
+function toggleEdge(){{S.edges=!S.edges;document.getElementById('btn-edge').className='c-btn'+(S.edges?' on-b':'');renderAll();}}
+function onYear(){{
+  let a=+document.getElementById('sl-min').value;
+  let b=+document.getElementById('sl-max').value;
+  if(a>b){{a=b;document.getElementById('sl-min').value=a;}}
+  S.yMin=a;S.yMax=b;
+  document.getElementById('yr-a').textContent=a;
+  document.getElementById('yr-b').textContent=b;
   renderAll();
 }}
 
-/* ════════════════════════════════════════
-   MAIN RENDER
-════════════════════════════════════════ */
-function renderAll() {{
-  const vis   = visibleSet();
-  const nodes = D.nodes.filter(n => vis.has(n.id));
-  const pos   = computeLayout(nodes);
-
-  renderBands();
-  renderAxis();
-  renderEdges(pos);
-  renderPath(pos);
-  renderCards(pos);
+function renderAll(){{
+  const vis=visSet();
+  const nodes=D.nodes.filter(n=>vis.has(n.id));
+  const pos=doLayout(nodes);
+  drawBands();drawAxis();drawEdges(pos);drawPath(pos);drawCards(pos);
 }}
 
-/* ════════════════════════════════════════
-   INIT
-════════════════════════════════════════ */
-function init() {{
-  // Set virtual canvas size
-  const world = document.getElementById('world');
-  world.style.width  = V_W + 'px';
-  world.style.height = V_H + 'px';
-
-  const svg = document.getElementById('bg-svg');
-  svg.style.width  = V_W + 'px';
-  svg.style.height = V_H + 'px';
-  svg.setAttribute('viewBox', `0 0 ${{V_W}} ${{V_H}}`);
-
-  const cl = document.getElementById('cards-layer');
-  cl.style.width  = V_W + 'px';
-  cl.style.height = V_H + 'px';
-
-  // Year sliders
-  const [mn,mx] = D.year_range;
-  ['sl-min','sl-max'].forEach(id => {{
-    const sl = document.getElementById(id);
-    sl.min = mn; sl.max = mx;
-    sl.value = id === 'sl-min' ? mn : mx;
+function init(){{
+  const world=document.getElementById('world');
+  world.style.width=V_W+'px';world.style.height=V_H+'px';
+  const svg=document.getElementById('bg-svg');
+  svg.style.width=V_W+'px';svg.style.height=V_H+'px';
+  svg.setAttribute('viewBox',`0 0 ${{V_W}} ${{V_H}}`);
+  document.getElementById('cl').style.width=V_W+'px';
+  document.getElementById('cl').style.height=V_H+'px';
+  ['sl-min','sl-max'].forEach(id=>{{
+    const sl=document.getElementById(id);
+    sl.min=YEAR_MIN;sl.max=YEAR_MAX;
+    sl.value=id==='sl-min'?YEAR_MIN:YEAR_MAX;
   }});
-  document.getElementById('yr-a').textContent = mn;
-  document.getElementById('yr-b').textContent = mx;
-
+  document.getElementById('yr-a').textContent=YEAR_MIN;
+  document.getElementById('yr-b').textContent=YEAR_MAX;
   renderAll();
-  resetZoom(); // fit on load
-
-  // Click outside → close panel
-  document.getElementById('vp').addEventListener('click', e => {{
-    if (!e.target.closest('.rm-card') && !e.target.closest('#dp'))
-      closePanel();
+  initZoom();
+  document.getElementById('vp').addEventListener('click',e=>{{
+    if(!e.target.closest('.card')&&!e.target.closest('#dp'))closePanel();
   }});
-
-  // Resize
   let rt;
-  window.addEventListener('resize', () => {{
-    clearTimeout(rt);
-    rt = setTimeout(resetZoom, 120);
-  }});
+  window.addEventListener('resize',()=>{{clearTimeout(rt);rt=setTimeout(()=>{{renderAll();applyZ();}},120);}});
 }}
 
-document.readyState === 'loading'
-  ? document.addEventListener('DOMContentLoaded', init)
-  : setTimeout(init, 60);
+document.readyState==='loading'
+  ?document.addEventListener('DOMContentLoaded',init)
+  :setTimeout(init,60);
 </script>
 </body>
 </html>"""
