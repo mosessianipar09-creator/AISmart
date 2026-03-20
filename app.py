@@ -1054,108 +1054,79 @@ Berikan analisis dalam format:
         with sub3:
             st.markdown("##### ⚡ Contradiction Detector")
             st.caption(
-                "Paper mana yang klaimnya berpotensi saling bertentangan? "
-                "Skor dihitung dari keyword yang sama tapi sinyal yang berlawanan."
+                "Pilih **Paper A** dan **Paper B** secara bebas dari dropdown. "
+                "Contradiction Meter, sinyal berlawanan, dan verdict update **real-time** "
+                "tanpa reload. Tekan ⇄ SWAP untuk tukar posisi."
             )
 
-            if st.button("▶️ Deteksi Kontradiksi", key="btn_contra", use_container_width=True):
-                with st.spinner("Menganalisis potensi kontradiksi antar paper…"):
+            if st.button("▶️ Buka Contradiction Arena",
+                         key="btn_contra", use_container_width=True):
+                with st.spinner("Membangun arena…"):
                     try:
-                        pairs = build_contradiction_data(papers)
-                        fig   = build_contradiction_chart(pairs)
-                        st.session_state.contra_pairs    = pairs
-                        st.session_state.contra_fig      = fig
+                        from contradiction_detector import render_contradiction
+                        html = render_contradiction(papers, height=620)
+                        st.session_state.contra_pairs    = html   # reuse key, store HTML
                         st.session_state.contra_analysis = ""
                     except Exception as exc:
                         st.error(f"Gagal: {exc}")
 
-            if st.session_state.contra_pairs is not None:
-                pairs = st.session_state.contra_pairs
+            if st.session_state.contra_pairs:
                 st.markdown("---")
+                st.caption(
+                    "💡 Ganti dropdown Paper A / B → semua panel update instan · "
+                    "⇄ SWAP = tukar posisi · Sinyal 🟢 = klaim positif · 🔴 = klaim negatif"
+                )
+                components.html(
+                    _with_fullscreen(st.session_state.contra_pairs),
+                    height=642, scrolling=False
+                )
 
-                if not pairs:
-                    st.info("✅ Tidak ditemukan potensi kontradiksi signifikan antar paper. Korpus ini cukup konsisten.")
+                st.markdown("---")
+                if st.session_state.contra_analysis:
+                    st.markdown(st.session_state.contra_analysis)
+                    if st.button("🔄 Regenerasi Analisis", key="btn_contra_regen"):
+                        st.session_state.contra_analysis = ""
+                        st.rerun()
                 else:
-                    # Metric summary
-                    high   = sum(1 for p in pairs if p["conflict_score"] >= 65)
-                    medium = sum(1 for p in pairs if 40 <= p["conflict_score"] < 65)
-                    low    = sum(1 for p in pairs if p["conflict_score"] < 40)
-
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Total Pasangan", len(pairs))
-                    m2.metric("⚡ Konflik Tinggi", high)
-                    m3.metric("⚠️ Berpotensi Beda", medium)
-                    m4.metric("🔍 Perlu Dicermati", low)
-                    st.markdown("---")
-
-                    # Bar chart
-                    if st.session_state.contra_fig:
-                        st.plotly_chart(st.session_state.contra_fig, use_container_width=True)
-
-                    # Detail cards per pair
-                    st.markdown("#### 📋 Detail Pasangan")
-                    for pair in pairs[:6]:
-                        with st.expander(
-                            f"{pair['label']} · Score {pair['conflict_score']} · "
-                            f"{pair['paper1_title'][:45]}… vs {pair['paper2_title'][:45]}…"
-                        ):
-                            c1, c2 = st.columns(2)
-                            with c1:
-                                st.markdown(f"**Paper A ({pair['paper1_year']})**")
-                                st.markdown(f"_{pair['paper1_title']}_")
-                                st.markdown(f"**Sitasi:** {pair['paper1_cite']:,}")
-                            with c2:
-                                st.markdown(f"**Paper B ({pair['paper2_year']})**")
-                                st.markdown(f"_{pair['paper2_title']}_")
-                                st.markdown(f"**Sitasi:** {pair['paper2_cite']:,}")
-                            st.markdown(f"**Keyword bersama:** `{'` · `'.join(pair['shared_kws'])}`")
-                            if pair["conflict_terms"]:
-                                st.markdown(f"**Sinyal berlawanan:** `{'` · `'.join(pair['conflict_terms'])}`")
-
-                    # Lazy AI
-                    if st.session_state.contra_analysis:
-                        st.markdown("---")
-                        st.markdown(st.session_state.contra_analysis)
-                        if st.button("🔄 Regenerasi", key="btn_contra_regen"):
-                            st.session_state.contra_analysis = ""
-                            st.rerun()
-                    else:
-                        if st.button("🔬 Analisis Mendalam — Apa implikasinya bagi riset?",
-                                     key="btn_contra_ai", use_container_width=True):
-                            top3 = pairs[:3]
-                            pairs_text = "\n".join(
-                                f"- [{p['conflict_score']}] \"{p['paper1_title'][:60]}\" ({p['paper1_year']}) "
-                                f"vs \"{p['paper2_title'][:60]}\" ({p['paper2_year']})"
-                                for p in top3
-                            )
-                            prompt = f"""Kamu adalah metodolog riset ilmiah senior.
+                    if st.button("🔬 Analisis Mendalam — Apa implikasi kontradiksi ini?",
+                                 key="btn_contra_ai", use_container_width=True):
+                        prompt = f"""Kamu adalah metodolog riset ilmiah senior.
 
 Topik: "{topic}"
-Jumlah paper: {len(papers)}
-Pasangan berpotensi kontradiktif teratas:
-{pairs_text}
+Jumlah paper dianalisis: {len(papers)}
+
+Data paper (judul + tahun + sitasi):
+""" + "\n".join(
+    f"- {p['title'][:70]} ({p.get('year','?')}) · {p.get('citations',0):,} sitasi"
+    for p in papers[:15]
+) + """
 
 Berikan analisis dalam format:
 
-## ⚡ Akar Kontradiksi
-[Mengapa paper-paper ini bisa berbeda kesimpulan — metodologi, dataset, definisi berbeda?]
+## ⚡ Sumber Kontradiksi Umum
+[Mengapa paper dalam bidang ini sering punya kesimpulan yang berbeda]
 
-## 🔬 Implikasi untuk Peneliti Baru
-[Apa yang harus hati-hati dibaca jika ingin masuk ke bidang ini]
+## 🔬 Yang Harus Diperhatikan Peneliti Baru
+[Peringatan konkret saat membaca literatur yang saling bertentangan]
 
 ## 🛠️ Cara Mensintesis Temuan Bertentangan
-[Strategi konkret untuk menggabungkan atau memilih antara klaim yang berlawanan]
+[Strategi praktis: pilih yang mana, gabungkan bagaimana]
 
-## 💡 Peluang Riset dari Kontradiksi
-[Justru dari ketidaksepakatan ini, riset apa yang sangat dibutuhkan?]"""
+## 💡 Peluang dari Ketidaksepakatan
+[Kontradiksi ini justru membuka celah riset apa?]"""
 
-                            with st.spinner("Gemini menganalisis kontradiksi…"):
-                                try:
-                                    resp = model.generate_content(prompt)
-                                    st.session_state.contra_analysis = resp.text
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Gagal: {e}")
+                        with st.spinner("Gemini menganalisis kontradiksi…"):
+                            try:
+                                resp = model.generate_content(prompt)
+                                st.session_state.contra_analysis = resp.text
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Gagal: {e}")
+
+                if st.button("🔄 Reset", key="btn_contra_reset"):
+                    st.session_state.contra_pairs    = None
+                    st.session_state.contra_analysis = ""
+                    st.rerun()
 
         # ──────────────────────────────────────────────
         # SUB-TAB 4 — INFLUENCE MAP
