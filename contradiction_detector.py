@@ -425,9 +425,11 @@ body::after{{content:'';position:fixed;inset:0;pointer-events:none;z-index:997;b
 
 </div><!-- #root -->
 
+<script type="application/json" id="__papers_data__">{pj}</script>
+
 <script>
 /* DATA */
-const PAPERS = {pj};
+const PAPERS = JSON.parse(document.getElementById('__papers_data__').textContent);
 
 /* NLP */
 const SW = new Set(["a","an","the","and","or","but","in","on","at","to","for","of","with","by","from","as","is","was","are","were","be","been","have","has","had","do","does","did","will","would","could","should","may","might","not","this","that","these","those","it","its","we","our","their","they","paper","study","research","propose","present","show","result","results","approach","method","methods","using","used","use","based","novel","new","existing","previous","however","also","which","such","than","more","most","work","model","system","data","two","three","one","can","well","significant","significantly","evaluate","experiment","dataset"]);
