@@ -35,7 +35,6 @@ from graph_layer import (
 from graph_influence import render_influence, influence_stats
 from graph_gap import render_gap, gap_stats
 from topic_river import render_topic_river, river_stats
-from contradiction_detector import render_contradiction
 
 import re
 import math
@@ -190,186 +189,6 @@ def build_research_dna(papers: list[dict]):
         ),
         height=fig_h,
         margin=dict(l=130, r=20, t=60, b=140),
-        **_PLOTLY_DARK,
-    )
-    return fig
-
-
-def build_contradiction_data(papers: list[dict]) -> list[dict]:
-    """
-    Find paper pairs with potential contradictions.
-    Method: papers that share topic keywords but have opposing signal words.
-    Returns list of dicts sorted by conflict_score desc.
-    """
-    POSITIVE_SIGNALS = {
-        "improve","improves","improved","improvement","outperform","outperforms",
-        "superior","better","effective","efficient","accurate","robust","strong",
-        "significant","high","increase","enhance","advantage","novel","promising",
-    }
-    NEGATIVE_SIGNALS = {
-        "fail","fails","failed","failure","poor","worse","inferior","ineffective",
-        "inaccurate","weak","insignificant","low","decrease","limitation","drawback",
-        "challenge","problem","issue","concern","limitation","limited","lacks",
-    }
-    CONTRADICTION_PAIRS = {
-        ("improve", "fail"), ("effective", "ineffective"), ("accurate", "inaccurate"),
-        ("robust", "weak"), ("superior", "inferior"), ("increase", "decrease"),
-        ("high", "low"), ("strong", "weak"), ("better", "worse"),
-    }
-
-    def signals(text: str):
-        tokens = set(re.findall(r"[a-z]+", text.lower()))
-        return tokens & POSITIVE_SIGNALS, tokens & NEGATIVE_SIGNALS
-
-    def shared_keywords(p1, p2):
-        t1 = set(_tokenize((p1.get("title","") or "") + " " + (p1.get("abstract","") or "")))
-        t2 = set(_tokenize((p2.get("title","") or "") + " " + (p2.get("abstract","") or "")))
-        return (t1 & t2) - _STOPWORDS
-
-    results = []
-    for i, p1 in enumerate(papers):
-        for p2 in papers[i+1:]:
-            shared = shared_keywords(p1, p2)
-            if len(shared) < 3:
-                continue
-
-            text1 = (p1.get("title","") or "") + " " + (p1.get("abstract","") or "")
-            text2 = (p2.get("title","") or "") + " " + (p2.get("abstract","") or "")
-            pos1, neg1 = signals(text1)
-            pos2, neg2 = signals(text2)
-
-            conflict_count = 0
-            conflict_terms = []
-            for a_pos, b_neg in [(pos1, neg2), (pos2, neg1)]:
-                for a in a_pos:
-                    for b in b_neg:
-                        if (a, b) in CONTRADICTION_PAIRS or (b, a) in CONTRADICTION_PAIRS:
-                            conflict_count += 1
-                            conflict_terms.append(f"{a} ↔ {b}")
-
-            base         = min(len(shared) * 4, 40)
-            signal_score = min(conflict_count * 15, 45)
-            try:
-                yr_gap = abs(int(p1.get("year", 0)) - int(p2.get("year", 0)))
-            except Exception:
-                yr_gap = 0
-            time_score   = min(yr_gap * 2, 15)
-            conflict_score = min(100, base + signal_score + time_score)
-            if conflict_score < 20:
-                continue
-
-            results.append({
-                "paper1_title":   p1["title"],
-                "paper2_title":   p2["title"],
-                "paper1_year":    p1.get("year", "?"),
-                "paper2_year":    p2.get("year", "?"),
-                "paper1_cite":    p1.get("citations", 0),
-                "paper2_cite":    p2.get("citations", 0),
-                "shared_kws":     sorted(list(shared))[:6],
-                "conflict_terms": list(set(conflict_terms))[:4],
-                "conflict_score": conflict_score,
-                "label": (
-                    "⚡ KONFLIK TINGGI"      if conflict_score >= 65
-                    else "⚠️ BERPOTENSI BERBEDA" if conflict_score >= 40
-                    else "🔍 PERLU DICERMATI"
-                ),
-                "label_color": (
-                    "#f87171" if conflict_score >= 65
-                    else "#fb923c" if conflict_score >= 40
-                    else "#facc15"
-                ),
-            })
-
-    return sorted(results, key=lambda x: -x["conflict_score"])
-
-
-def build_contradiction_chart(pairs: list[dict]):
-    """
-    Contradiction bar chart.
-    FIX: color gradient per score level, bigger fonts,
-    score badge annotations, clear visual hierarchy.
-    """
-    import plotly.graph_objects as go
-
-    if not pairs:
-        return None
-
-    top = pairs[:8]
-
-    # Better labels: "A (YYYY) vs B (YYYY)"
-    labels = []
-    for p in top:
-        a = p["paper1_title"][:30] + "…" if len(p["paper1_title"]) > 30 else p["paper1_title"]
-        b = p["paper2_title"][:30] + "…" if len(p["paper2_title"]) > 30 else p["paper2_title"]
-        labels.append(f"{a}  ↔  {b}")
-
-    scores = [p["conflict_score"] for p in top]
-    colors = [p["label_color"] for p in top]
-
-    # Custom hover text
-    hover = [
-        f"<b>{p['label']}</b><br>"
-        f"Score: <b>{p['conflict_score']}</b>/100<br>"
-        f"Paper A: {p['paper1_title'][:60]}<br>"
-        f"Paper B: {p['paper2_title'][:60]}<br>"
-        f"Keyword bersama: {', '.join(p['shared_kws'][:4])}<br>"
-        + (f"Sinyal berlawanan: {', '.join(p['conflict_terms'][:3])}" if p['conflict_terms'] else "")
-        for p in top
-    ]
-
-    fig = go.Figure()
-
-    # Colored bars with gradient opacity
-    fig.add_trace(go.Bar(
-        x=scores,
-        y=labels,
-        orientation="h",
-        marker=dict(
-            color=colors,
-            opacity=[0.65 + 0.35 * (s / 100) for s in scores],
-            line=dict(color="rgba(255,255,255,.15)", width=1),
-        ),
-        text=[f"  {s}" for s in scores],
-        textposition="inside",
-        textfont=dict(size=13, color="white", family="JetBrains Mono, monospace"),
-        hovertemplate="%{customdata}<extra></extra>",
-        customdata=hover,
-    ))
-
-    # Add score reference lines
-    for threshold, label, clr in [(65, "⚡ Konflik Tinggi", "#f87171"), (40, "⚠️ Berpotensi Beda", "#fb923c")]:
-        fig.add_vline(
-            x=threshold, line_dash="dash",
-            line_color=clr, line_width=1.2, opacity=0.5,
-            annotation=dict(
-                text=label, font=dict(size=10, color=clr),
-                yanchor="bottom", y=1.02,
-            ),
-        )
-
-    row_h  = 52
-    fig_h  = max(320, len(top) * row_h + 100)
-
-    fig.update_layout(
-        title=dict(
-            text="⚡ Contradiction Radar — Pasangan Paper Berpotensi Kontradiktif",
-            font=dict(size=15, color="#e8f4ff", family="Inter, sans-serif"),
-            x=0.02,
-        ),
-        xaxis=dict(
-            title=dict(text="Conflict Score  (0 = sejalan · 100 = bertentangan penuh)", font=dict(size=12, color="#7aa8cc")),
-            range=[0, 108],
-            color="#9ac0e0",
-            tickfont=dict(size=12),
-            gridcolor="rgba(80,140,220,.1)",
-        ),
-        yaxis=dict(
-            color="#9ac0e0",
-            tickfont=dict(size=11, family="JetBrains Mono, monospace"),
-            automargin=True,
-        ),
-        height=fig_h,
-        margin=dict(l=20, r=20, t=60, b=20),
         **_PLOTLY_DARK,
     )
     return fig
@@ -634,14 +453,11 @@ for key, default in {
     "influence_stats_data": None,
     "gap_html":             None,
     "gap_stats_data":       None,
-    # Tab 3 — 3 fitur baru
+    # Tab 3 — fitur visualisasi
     "river_fig":            None,
     "river_analysis":       "",
     "dna_fig":              None,
     "dna_analysis":         "",
-    "contra_pairs":         None,
-    "contra_fig":           None,
-    "contra_analysis":      "",
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -711,9 +527,6 @@ with tab1:
             st.session_state.river_analysis         = ""
             st.session_state.dna_fig                = None
             st.session_state.dna_analysis           = ""
-            st.session_state.contra_pairs           = None
-            st.session_state.contra_fig             = None
-            st.session_state.contra_analysis        = ""
 
     if debug_mode and st.session_state.debug_log:
         st.markdown("**🐛 Debug Log:**")
@@ -883,10 +696,9 @@ with tab3:
             "Klik tombol di setiap sub-tab untuk memulai analisis."
         )
 
-        sub1, sub2, sub3, sub4, sub5 = st.tabs([
+        sub1, sub2, sub3, sub4 = st.tabs([
             "🌊 Topic River",
             "🧬 Research DNA",
-            "⚡ Contradiction",
             "🎯 Influence Map",
             "🕳️ Gap Detector",
         ])
@@ -1060,88 +872,9 @@ Berikan analisis dalam format:
                                 st.error(f"Gagal: {e}")
 
         # ──────────────────────────────────────────────
-        # SUB-TAB 3 — CONTRADICTION DETECTOR
+        # SUB-TAB 3 — INFLUENCE MAP
         # ──────────────────────────────────────────────
         with sub3:
-            st.markdown("##### ⚡ Contradiction Detector")
-            st.caption(
-                "Pilih **Paper A** dan **Paper B** secara bebas dari dropdown. "
-                "Contradiction Meter, sinyal berlawanan, dan verdict update **real-time** "
-                "tanpa reload. Tekan ⇄ SWAP untuk tukar posisi."
-            )
-
-            if st.button("▶️ Buka Contradiction Arena",
-                         key="btn_contra", use_container_width=True):
-                with st.spinner("Membangun arena…"):
-                    try:
-                        html = render_contradiction(papers, height=620)
-                        st.session_state.contra_pairs    = html   # reuse key, store HTML
-                        st.session_state.contra_analysis = ""
-                    except Exception as exc:
-                        st.error(f"Gagal: {exc}")
-
-            if st.session_state.contra_pairs:
-                st.markdown("---")
-                st.caption(
-                    "💡 Ganti dropdown Paper A / B → semua panel update instan · "
-                    "⇄ SWAP = tukar posisi · Sinyal 🟢 = klaim positif · 🔴 = klaim negatif"
-                )
-                components.html(
-                    _with_fullscreen(st.session_state.contra_pairs),
-                    height=642, scrolling=False
-                )
-
-                st.markdown("---")
-                if st.session_state.contra_analysis:
-                    st.markdown(st.session_state.contra_analysis)
-                    if st.button("🔄 Regenerasi Analisis", key="btn_contra_regen"):
-                        st.session_state.contra_analysis = ""
-                        st.rerun()
-                else:
-                    if st.button("🔬 Analisis Mendalam — Apa implikasi kontradiksi ini?",
-                                 key="btn_contra_ai", use_container_width=True):
-                        prompt = f"""Kamu adalah metodolog riset ilmiah senior.
-
-Topik: "{topic}"
-Jumlah paper dianalisis: {len(papers)}
-
-Data paper (judul + tahun + sitasi):
-""" + "\n".join(
-    f"- {p['title'][:70]} ({p.get('year','?')}) · {p.get('citations',0):,} sitasi"
-    for p in papers[:15]
-) + """
-
-Berikan analisis dalam format:
-
-## ⚡ Sumber Kontradiksi Umum
-[Mengapa paper dalam bidang ini sering punya kesimpulan yang berbeda]
-
-## 🔬 Yang Harus Diperhatikan Peneliti Baru
-[Peringatan konkret saat membaca literatur yang saling bertentangan]
-
-## 🛠️ Cara Mensintesis Temuan Bertentangan
-[Strategi praktis: pilih yang mana, gabungkan bagaimana]
-
-## 💡 Peluang dari Ketidaksepakatan
-[Kontradiksi ini justru membuka celah riset apa?]"""
-
-                        with st.spinner("Gemini menganalisis kontradiksi…"):
-                            try:
-                                resp = model.generate_content(prompt)
-                                st.session_state.contra_analysis = resp.text
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Gagal: {e}")
-
-                if st.button("🔄 Reset", key="btn_contra_reset"):
-                    st.session_state.contra_pairs    = None
-                    st.session_state.contra_analysis = ""
-                    st.rerun()
-
-        # ──────────────────────────────────────────────
-        # SUB-TAB 4 — INFLUENCE MAP
-        # ──────────────────────────────────────────────
-        with sub4:
             st.markdown("##### 🎯 Influence Map")
             st.caption(
                 "Peta tata surya pengaruh ilmiah. "
@@ -1192,9 +925,9 @@ Berikan analisis dalam format:
                     st.rerun()
 
         # ──────────────────────────────────────────────
-        # SUB-TAB 5 — GAP DETECTOR
+        # SUB-TAB 4 — GAP DETECTOR
         # ──────────────────────────────────────────────
-        with sub5:
+        with sub4:
             st.markdown("##### 🕳️ Research Gap Detector")
             st.caption(
                 "Analisis multidimensional celah riset. "
