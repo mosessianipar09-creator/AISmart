@@ -38,6 +38,123 @@ from graph_gap import render_gap, gap_stats
 
 
 # ─────────────────────────────────────────────────────
+# HELPER — FULLSCREEN TOGGLE
+# ─────────────────────────────────────────────────────
+
+def _with_fullscreen(html: str, label: str = "") -> str:
+    """
+    Inject tombol Fullscreen / Exit ke dalam HTML komponen.
+    Tombol muncul di pojok kanan atas — klik masuk fullscreen,
+    klik lagi keluar. Persis seperti YouTube.
+    Tidak memodifikasi file graph_*.py sama sekali.
+    """
+    _label = label or "Fullscreen"
+    _inject = f"""
+<style>
+#_fsbtn {{
+  position: fixed;
+  top: 12px; right: 14px;
+  z-index: 99999;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 14px;
+  background: rgba(10, 20, 40, 0.75);
+  border: 1px solid rgba(99, 162, 255, 0.35);
+  border-radius: 7px;
+  color: #a8c8ff;
+  font-family: 'Share Tech Mono', 'Fira Code', monospace;
+  font-size: 11px; letter-spacing: 1px;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  transition: all 0.18s ease;
+  user-select: none;
+}}
+#_fsbtn:hover {{
+  background: rgba(99, 162, 255, 0.18);
+  border-color: rgba(99, 162, 255, 0.65);
+  color: #e0f0ff;
+  box-shadow: 0 0 12px rgba(99, 162, 255, 0.2);
+}}
+#_fsbtn.active {{
+  border-color: rgba(249, 115, 22, 0.6);
+  color: #fdba74;
+  background: rgba(249, 115, 22, 0.1);
+}}
+/* Saat fullscreen: sembunyikan scrollbar, beri latar hitam */
+:fullscreen, :-webkit-full-screen {{
+  background: #050b1a !important;
+  overflow: hidden;
+}}
+</style>
+
+<button id="_fsbtn" onclick="_toggleFS()" title="Fullscreen / Exit">
+  <svg id="_fs_icon" width="13" height="13" viewBox="0 0 24 24"
+       fill="none" stroke="currentColor" stroke-width="2.2"
+       stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="15 3 21 3 21 9"></polyline>
+    <polyline points="9 21 3 21 3 15"></polyline>
+    <line x1="21" y1="3" x2="14" y2="10"></line>
+    <line x1="3" y1="21" x2="10" y2="14"></line>
+  </svg>
+  <span id="_fs_lbl">FULLSCREEN</span>
+</button>
+
+<script>
+(function() {{
+  var _inFS = false;
+  var _ICON_ENTER = '<polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line>';
+  var _ICON_EXIT  = '<polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="10" y1="14" x2="3" y2="21"></line><line x1="21" y1="3" x2="14" y2="10"></line>';
+
+  window._toggleFS = function() {{
+    var el  = document.documentElement;
+    var btn = document.getElementById('_fsbtn');
+    var lbl = document.getElementById('_fs_lbl');
+    var ico = document.getElementById('_fs_icon');
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {{
+      var req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+      if (req) req.call(el).catch(function(){{}});
+    }} else {{
+      var ex = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+      if (ex) ex.call(document).catch(function(){{}});
+    }}
+  }};
+
+  function _onFSChange() {{
+    var btn = document.getElementById('_fsbtn');
+    var lbl = document.getElementById('_fs_lbl');
+    var ico = document.getElementById('_fs_icon');
+    if (!btn) return;
+    _inFS = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    if (_inFS) {{
+      lbl.textContent = 'EXIT';
+      ico.innerHTML   = _ICON_EXIT;
+      btn.classList.add('active');
+    }} else {{
+      lbl.textContent = 'FULLSCREEN';
+      ico.innerHTML   = _ICON_ENTER;
+      btn.classList.remove('active');
+    }}
+  }}
+
+  document.addEventListener('fullscreenchange',       _onFSChange);
+  document.addEventListener('webkitfullscreenchange', _onFSChange);
+  document.addEventListener('mozfullscreenchange',    _onFSChange);
+  document.addEventListener('MSFullscreenChange',     _onFSChange);
+
+  // ESC key juga keluar fullscreen (native browser — sudah otomatis, ini untuk update UI)
+  document.addEventListener('keydown', function(e) {{
+    if (e.key === 'Escape') setTimeout(_onFSChange, 80);
+  }});
+}})();
+</script>
+"""
+    # Inject sebelum </body> agar tidak konflik dengan script lain
+    if "</body>" in html:
+        return html.replace("</body>", _inject + "</body>", 1)
+    # Fallback: append di akhir
+    return html + _inject
+
+
+# ─────────────────────────────────────────────────────
 # 1. KONFIGURASI HALAMAN
 # ─────────────────────────────────────────────────────
 
@@ -459,7 +576,8 @@ with tab3:
                     "Slider = filter rentang tahun secara real-time"
                 )
                 components.html(
-                    st.session_state.roadmap_html, height=700, scrolling=False
+                    _with_fullscreen(st.session_state.roadmap_html),
+                    height=700, scrolling=False
                 )
 
                 if st.button("🔄 Rebuild Roadmap", key="btn_roadmap_reset"):
@@ -530,7 +648,8 @@ with tab3:
                     "**COMPARE** → split-view 2 paper side-by-side"
                 )
                 components.html(
-                    st.session_state.influence_html, height=720, scrolling=False
+                    _with_fullscreen(st.session_state.influence_html),
+                    height=720, scrolling=False
                 )
 
                 if st.button("🔄 Rebuild Influence Map", key="btn_influence_reset"):
@@ -589,7 +708,8 @@ with tab3:
                     "Tombol **⎘ SALIN** = copy Gap Statement ke clipboard"
                 )
                 components.html(
-                    st.session_state.gap_html, height=740, scrolling=False
+                    _with_fullscreen(st.session_state.gap_html),
+                    height=740, scrolling=False
                 )
 
                 if st.button("🔄 Rebuild Gap Detector", key="btn_gap_reset"):
