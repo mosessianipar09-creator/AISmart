@@ -377,15 +377,15 @@ input[type=range]::-webkit-slider-thumb{{
   font-family:var(--mono);font-size:9px;fill:#4a6588;text-anchor:middle;
 }}
 .node-lbl{{
-  font-family:var(--body);font-size:10px;fill:#dce8ff;
+  font-family:var(--body);font-size:11px;fill:#dce8ff;
   pointer-events:none;dominant-baseline:hanging;
 }}
 .node-cite{{
-  font-family:var(--mono);font-size:8px;fill:var(--text-lo);
+  font-family:var(--mono);font-size:9px;fill:var(--text-lo);
   pointer-events:none;
 }}
 .node-yr{{
-  font-family:var(--mono);font-size:9px;font-weight:600;
+  font-family:var(--mono);font-size:10px;font-weight:600;
   text-anchor:middle;pointer-events:none;dominant-baseline:central;
 }}
 .cedge{{
@@ -417,21 +417,21 @@ input[type=range]::-webkit-slider-thumb{{
   box-shadow:0 10px 40px rgba(0,0,0,.7),0 0 18px rgba(99,162,255,.08);
   backdrop-filter:blur(14px);font-size:11.5px;line-height:1.55;
 }}
-.tt-title{{font-family:var(--body);font-size:11.5px;font-weight:600;color:var(--text-hi);margin-bottom:5px;line-height:1.35;}}
-.tt-meta{{font-family:var(--mono);font-size:8.5px;color:var(--text-mid);letter-spacing:.4px;margin-bottom:3px;}}
+.tt-title{{font-family:var(--body);font-size:12.5px;font-weight:600;color:var(--text-hi);margin-bottom:5px;line-height:1.35;}}
+.tt-meta{{font-family:var(--mono);font-size:9px;color:var(--text-mid);letter-spacing:.4px;margin-bottom:3px;}}
 .tt-badge{{
   display:inline-block;padding:2px 8px;border-radius:3px;
-  font-family:var(--mono);font-size:7.5px;letter-spacing:1px;
+  font-family:var(--mono);font-size:8px;letter-spacing:1px;
   text-transform:uppercase;font-weight:700;margin:5px 0 7px;
 }}
 .tt-badge.pioneer{{background:rgba(167,139,250,.14);color:var(--pioneer-c);border:1px solid rgba(167,139,250,.3);}}
 .tt-badge.established{{background:rgba(34,211,238,.1);color:var(--estab-c);border:1px solid rgba(34,211,238,.25);}}
 .tt-badge.emerging{{background:rgba(96,165,250,.1);color:var(--emerg-c);border:1px solid rgba(96,165,250,.22);}}
 .tt-abs{{
-  font-family:var(--body);font-size:9.5px;color:var(--text-mid);line-height:1.5;
+  font-family:var(--body);font-size:10px;color:var(--text-mid);line-height:1.5;
   border-top:1px solid var(--border-dim);padding-top:6px;margin-top:4px;
 }}
-.tt-hint{{font-family:var(--mono);font-size:8px;color:var(--path-c);margin-top:7px;}}
+.tt-hint{{font-family:var(--mono);font-size:8.5px;color:var(--path-c);margin-top:7px;}}
 
 /* ── Focus Detail Panel ── */
 #fp{{
@@ -446,16 +446,16 @@ input[type=range]::-webkit-slider-thumb{{
 @keyframes slin{{from{{opacity:0;transform:translateX(14px)}}to{{opacity:1;transform:none}}}}
 #fp.vis{{display:block;}}
 .fp-hdr{{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;}}
-.fp-title{{font-family:var(--body);font-size:11.5px;font-weight:600;color:var(--text-hi);line-height:1.4;flex:1;padding-right:8px;}}
-.fp-x{{cursor:pointer;color:var(--text-lo);font-size:16px;line-height:1;transition:color .15s;}}
+.fp-title{{font-family:var(--body);font-size:12px;font-weight:600;color:var(--text-hi);line-height:1.4;flex:1;padding-right:8px;}}
+.fp-x{{cursor:pointer;color:var(--text-lo);font-size:17px;line-height:1;transition:color .15s;}}
 .fp-x:hover{{color:var(--text-hi);}}
 .fp-row{{
   display:flex;justify-content:space-between;align-items:center;
   padding:5px 0;border-bottom:1px solid var(--border-dim);
 }}
-.fp-k{{font-family:var(--mono);font-size:8.5px;color:var(--text-lo);letter-spacing:.8px;text-transform:uppercase;}}
-.fp-v{{font-family:var(--mono);font-size:10px;color:var(--accent);font-weight:600;}}
-.fp-abs{{font-family:var(--body);font-size:9.5px;color:var(--text-mid);line-height:1.5;margin:9px 0;}}
+.fp-k{{font-family:var(--mono);font-size:9px;color:var(--text-lo);letter-spacing:.8px;text-transform:uppercase;}}
+.fp-v{{font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:600;}}
+.fp-abs{{font-family:var(--body);font-size:10px;color:var(--text-mid);line-height:1.5;margin:9px 0;}}
 .fp-link{{
   display:block;width:100%;padding:8px;text-align:center;
   background:rgba(99,162,255,.08);border:1px solid rgba(99,162,255,.25);
@@ -586,7 +586,7 @@ const VPALE = [
   '#f472b6','#fb923c','#facc15','#4ade80','#34d399',
   '#22d3ee','#818cf8','#c084fc','#f87171','#a3e635'
 ];
-const CW=154, CH=58, PX=78, AXISH=38, TOPPAD=68;
+const CW=178, CH=76, PX=88, AXISH=44, TOPPAD=72;
 
 /* ══════════════════════════════════════════════════
    DIMENSIONS
@@ -616,21 +616,44 @@ function bandH() {{ return (H() - TOPPAD - AXISH) / 3; }}
    LAYOUT — prevent card overlap in same tier+year
 ══════════════════════════════════════════════════ */
 function layoutNodes(nodes) {{
+  const GAP = 14;      // vertical gap between stacked cards
+  const XSTEP = CW + 18; // horizontal step when staggering needed
+
+  // Group by tier + year
   const grps = {{}};
   nodes.forEach(n => {{
     const k = `${{n.tier}}_${{n.year}}`;
     (grps[k] = grps[k]||[]).push(n);
   }});
+
   const pos = {{}};
+
   Object.values(grps).forEach(grp => {{
-    const baseX = xScale(grp[0].year);
-    const baseCY = tierCY(grp[0].tier);
-    const totalH = grp.length * (CH + 10);
+    const baseX  = xScale(grp[0].year);
+    const bH     = bandH();
+    const maxPerCol = Math.max(1, Math.floor((bH - 20) / (CH + GAP)));
+    const nCols  = Math.ceil(grp.length / maxPerCol);
+    const colW   = XSTEP;
+
+    // Total width of all columns; center on baseX
+    const totalW = nCols * colW - 18;
+    const startX = baseX - totalW / 2;
+
     grp.forEach((n, i) => {{
-      const y = baseCY - totalH/2 + i*(CH+10);
-      pos[n.id] = {{x: baseX - CW/2, y, cx: baseX, cy: y + CH/2}};
+      const col      = Math.floor(i / maxPerCol);
+      const row      = i % maxPerCol;
+      const colItems = grp.slice(col * maxPerCol, (col + 1) * maxPerCol).length;
+
+      const cx   = startX + col * colW + CW / 2;
+      const bCY  = tierCY(grp[0].tier);
+      const spanH = colItems * (CH + GAP) - GAP;
+      const startY = bCY - spanH / 2;
+      const cy   = startY + row * (CH + GAP) + CH / 2;
+
+      pos[n.id] = {{x: cx - CW/2, y: cy - CH/2, cx, cy}};
     }});
   }});
+
   return pos;
 }}
 
@@ -647,19 +670,28 @@ function wrapText(textEl, str, maxW, x) {{
   textEl.textContent = '';
   const words = str.split(' ');
   let line=[], lineN=0;
+  const CHAR_W = 6.4;   // avg px per char at 11px DM Sans
+  const LINE_H = 13;
+  const MAX_LINES = 3;
   words.forEach(w => {{
+    if (lineN >= MAX_LINES) return;
     line.push(w);
-    if (line.join(' ').length*5.8 > maxW && line.length>1) {{
+    if (line.join(' ').length * CHAR_W > maxW && line.length > 1) {{
       line.pop();
-      const ts = ns('tspan',{{x, dy: lineN===0?'0':'12px'}});
+      const ts = ns('tspan',{{x, dy: lineN===0?'0':`${{LINE_H}}px`}});
       ts.textContent = line.join(' ');
       textEl.appendChild(ts);
       line=[w]; lineN++;
     }}
   }});
-  if(line.length) {{
-    const ts = ns('tspan',{{x, dy: lineN===0?'0':'12px'}});
-    ts.textContent = line.join(' ');
+  if(line.length && lineN < MAX_LINES) {{
+    const ts = ns('tspan',{{x, dy: lineN===0?'0':`${{LINE_H}}px`}});
+    // Truncate last line if still too long
+    let txt = line.join(' ');
+    while(txt.length * CHAR_W > maxW && txt.length > 3)
+      txt = txt.slice(0, -1);
+    if(txt !== line.join(' ')) txt += '…';
+    ts.textContent = txt;
     textEl.appendChild(ts);
   }}
 }}
@@ -836,20 +868,20 @@ function drawNodes(pos) {{
 
     // Year chip (top-right)
     grp.appendChild(ns('rect',{{
-      x:CW-36,y:5, width:30,height:14, rx:3,
+      x:CW-38,y:5, width:32,height:16, rx:3,
       fill:tc, opacity:'.13'
     }}));
-    const yTxt=ns('text',{{x:CW-21,y:12.5,class:'node-yr',fill:tc}});
+    const yTxt=ns('text',{{x:CW-22,y:13.5,class:'node-yr',fill:tc}});
     yTxt.textContent=n.year;
     grp.appendChild(yTxt);
 
     // Title
-    const tTxt=ns('text',{{x:10,y:20,class:'node-lbl'}});
-    wrapText(tTxt, n.title_short, CW-46, 10);
+    const tTxt=ns('text',{{x:10,y:22,class:'node-lbl'}});
+    wrapText(tTxt, n.title_short, CW-52, 10);
     grp.appendChild(tTxt);
 
     // Citation line
-    const cTxt=ns('text',{{x:10,y:CH-7,class:'node-cite',fill:tc}});
+    const cTxt=ns('text',{{x:10,y:CH-8,class:'node-cite',fill:tc}});
     cTxt.textContent=`↑ ${{n.citations.toLocaleString()}} · ${{n.source}}`;
     grp.appendChild(cTxt);
 
