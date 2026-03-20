@@ -42,7 +42,7 @@ genai.configure(api_key=API_KEY)
 def get_active_model():
     """
     Pilih model Gemini terbaik yang tersedia secara otomatis.
-    Urutan prioritas: gemini-1.5-flash → gemini-1.5-pro → gemini-pro → model pertama available.
+    Urutan prioritas:  gemini-1.5-pro → gemini-1.5-flash → gemini-pro → model pertama available.
     Returns None jika tidak ada model yang bisa digunakan.
     """
     try:
