@@ -379,36 +379,22 @@ def build_contradiction_chart(pairs: list[dict]):
 # HELPER — FULLSCREEN TOGGLE
 # ─────────────────────────────────────────────────────
 
-def _sanitize_html(html: str) -> str:
-    """
-    Sanitize HTML string so Streamlit's protobuf can encode it safely.
-    Converts any problematic Unicode characters to XML character references.
-    This prevents UnicodeEncodeError at components.html() / proto.srcdoc.
-    """
-    if not isinstance(html, str):
-        html = str(html)
-    # Round-trip through encode/decode to drop invalid surrogate characters
-    html = html.encode("utf-8", errors="replace").decode("utf-8")
-    # Encode any non-ASCII characters as XML numeric references (&#NNNN;)
-    # This keeps the HTML valid while being 100% ASCII-safe for protobuf
-    result = []
-    for ch in html:
-        if ord(ch) > 127:
-            result.append(f"&#{ord(ch)};")
-        else:
-            result.append(ch)
-    return "".join(result)
-
-
 def _with_fullscreen(html: str, label: str = "") -> str:
     """
     Inject tombol Fullscreen / Exit ke dalam HTML komponen.
     Tombol muncul di pojok kanan atas — klik masuk fullscreen,
     klik lagi keluar. Persis seperti YouTube.
     Tidak memodifikasi file graph_*.py sama sekali.
+
+    FIX: strip invalid surrogate chars only — converting ALL non-ASCII to
+    HTML entities (&#NNNN;) would break JS string literals inside <script>
+    tags, causing init() to silently fail and leaving dropdowns empty.
+    The real fix for UnicodeEncodeError is ensure_ascii=True in each module.
     """
-    # FIX: sanitize first to prevent UnicodeEncodeError in Streamlit's proto.srcdoc
-    html = _sanitize_html(html)
+    if not isinstance(html, str):
+        html = str(html)
+    # Strip invalid surrogates (the only chars that truly break protobuf)
+    html = html.encode("utf-8", errors="replace").decode("utf-8")
 
     _label = label or "Fullscreen"
     _inject = f"""
