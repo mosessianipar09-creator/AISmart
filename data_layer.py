@@ -81,7 +81,7 @@ def _raw_get(url: str, params: dict, max_retries: int = 3,
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, params=params,
-                                headers=headers, timeout=15)
+                                headers=headers, timeout=30)
 
             if "last_api_status" in st.session_state:
                 st.session_state.last_api_status = resp.status_code
@@ -503,7 +503,7 @@ def search_papers(
         threads.append(("Europe PMC", t2))
 
     for name, t in threads:
-        t.join(timeout=20)
+        t.join(timeout=60)
 
     # Log hasil paralel
     if "arxiv" in sources and ARXIV_AVAILABLE:
