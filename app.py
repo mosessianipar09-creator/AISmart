@@ -451,6 +451,7 @@ for key, default in {
     "roadmap_stats_data":   None,
     "influence_html":       None,
     "influence_stats_data": None,
+    "influence_selected":   [],          # ← BARU: simpan pilihan paper user
     "gap_html":             None,
     "gap_stats_data":       None,
     # Tab 3 — fitur visualisasi
@@ -521,6 +522,7 @@ with tab1:
             st.session_state.roadmap_stats_data     = None
             st.session_state.influence_html         = None
             st.session_state.influence_stats_data   = None
+            st.session_state.influence_selected     = []
             st.session_state.gap_html               = None
             st.session_state.gap_stats_data         = None
             st.session_state.river_fig              = None
@@ -872,7 +874,7 @@ Berikan analisis dalam format:
                                 st.error(f"Gagal: {e}")
 
         # ──────────────────────────────────────────────
-        # SUB-TAB 3 — INFLUENCE MAP
+        # SUB-TAB 3 — INFLUENCE MAP  (updated with paper selector)
         # ──────────────────────────────────────────────
         with sub3:
             st.markdown("##### 🎯 Influence Map")
@@ -892,12 +894,75 @@ Berikan analisis dalam format:
             )
             st.markdown("")
 
-            if st.button("🔨 Bangun Influence Map",
-                         key="btn_influence", use_container_width=True):
-                with st.spinner("Mengambil jaringan sitasi dari Semantic Scholar…"):
+            # ── Paper Selector ────────────────────────────────────────────
+            # Urutkan semua paper berdasarkan sitasi tertinggi dulu
+            sorted_by_cit = sorted(papers, key=lambda p: p.get("citations", 0), reverse=True)
+
+            def _inf_label(p: dict) -> str:
+                """Label ringkas: [YYYY · Sitasi] Judul..."""
+                title = p.get("title", "Untitled")
+                short = (title[:65] + "…") if len(title) > 65 else title
+                cit   = p.get("citations", 0)
+                yr    = p.get("year", "?")
+                return f"[{yr} · {cit:,} sitasi] {short}"
+
+            all_labels     = [_inf_label(p) for p in sorted_by_cit]
+            default_labels = all_labels[:20]   # 20 sitasi tertinggi dipilih otomatis
+            label_to_paper = {_inf_label(p): p for p in sorted_by_cit}
+
+            st.markdown(
+                f"**📑 Pilih paper untuk Influence Map** "
+                f"<span style='color:#64748b;font-size:0.82rem'>"
+                f"(maks. 20 · tersedia {len(sorted_by_cit)} paper · "
+                f"default = 20 sitasi tertinggi)</span>",
+                unsafe_allow_html=True
+            )
+
+            selected_labels = st.multiselect(
+                label="paper_selector",
+                options=all_labels,
+                default=default_labels,
+                max_selections=20,
+                label_visibility="collapsed",
+                help=(
+                    "Paper diurutkan dari sitasi terbanyak ke paling sedikit. "
+                    "Pilih minimal 2 dan maksimal 20 paper. "
+                    "Klik ✕ pada label untuk membatalkan pilihan."
+                ),
+            )
+
+            # Map label → paper dict
+            selected_papers_inf = [
+                label_to_paper[lbl]
+                for lbl in selected_labels
+                if lbl in label_to_paper
+            ]
+
+            n_sel = len(selected_papers_inf)
+
+            # Info bar di bawah selector
+            if n_sel == 0:
+                st.warning("⚠️ Belum ada paper dipilih. Pilih minimal 2 paper.")
+            elif n_sel == 1:
+                st.warning("⚠️ Pilih minimal **2 paper** untuk membangun Influence Map.")
+            elif n_sel == 20:
+                st.info(f"✅ **{n_sel} paper dipilih** — maksimum tercapai.")
+            else:
+                st.success(f"✅ **{n_sel} paper dipilih** — siap dibangun.")
+
+            st.markdown("")
+
+            if st.button(
+                "🔨 Bangun Influence Map",
+                key="btn_influence",
+                use_container_width=True,
+                disabled=(n_sel < 2),
+            ):
+                with st.spinner(f"Mengambil jaringan sitasi untuk {n_sel} paper dari Semantic Scholar…"):
                     try:
-                        st.session_state.influence_html       = render_influence(papers, height=700)
-                        st.session_state.influence_stats_data = influence_stats(papers)
+                        st.session_state.influence_html       = render_influence(selected_papers_inf, height=700)
+                        st.session_state.influence_stats_data = influence_stats(selected_papers_inf)
+                        st.session_state.influence_selected   = selected_labels
                     except Exception as exc:
                         st.error(f"Gagal membangun Influence Map: {exc}")
 
@@ -905,7 +970,7 @@ Berikan analisis dalam format:
                 ins = st.session_state.influence_stats_data or {}
                 st.markdown("---")
                 i1, i2, i3, i4 = st.columns(4)
-                i1.metric("Total Paper",     ins.get("total_papers",     "—"))
+                i1.metric("Paper Dipilih",   ins.get("total_papers",     "—"))
                 i2.metric("Total Node",      ins.get("total_nodes",      "—"))
                 i3.metric("Leluhur Ring 1",  ins.get("ancestor_count",   "—"))
                 i4.metric("Penerus Ring 2",  ins.get("descendant_count", "—"))
@@ -914,7 +979,10 @@ Berikan analisis dalam format:
                 ic1.markdown(f"**⭐ Pusat default**  \n_{ins.get('center_title','—')}_")
                 ic2.markdown(f"**🌐 Jangkauan**  \n_{ins.get('influence_reach','—')} node_")
                 st.markdown("---")
-                st.caption("💡 Klik node → detail · ⊙ JADIKAN PUSAT · Toggle PARTICLES / ORBITS / HEATMAP / COMPARE")
+                st.caption(
+                    "💡 Klik node → detail · ⊙ JADIKAN PUSAT · "
+                    "Toggle PARTICLES / ORBITS / HEATMAP / COMPARE"
+                )
                 components.html(
                     _with_fullscreen(st.session_state.influence_html),
                     height=720, scrolling=False
@@ -922,6 +990,7 @@ Berikan analisis dalam format:
                 if st.button("🔄 Rebuild", key="btn_influence_reset"):
                     st.session_state.influence_html       = None
                     st.session_state.influence_stats_data = None
+                    st.session_state.influence_selected   = []
                     st.rerun()
 
         # ──────────────────────────────────────────────
