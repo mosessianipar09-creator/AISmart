@@ -638,12 +638,22 @@ function setMode(m){{
 
 /* INIT */
 function init(){{
-  const sa=document.getElementById('sel-a'),sb=document.getElementById('sel-b');
-  const ph='<option value="-1">\u2014 Pilih paper \u2014</option>';
-  const opts=PAPERS.map(p=>`<option value="${{p.id}}">${{p.year}} \u00b7 ${{esc(p.short)}}</option>`).join('');
-  sa.innerHTML=ph+opts;sb.innerHTML=ph+opts;
-  document.getElementById('pcnt').textContent=PAPERS.length+' PAPER TERSEDIA';
-  if(PAPERS.length>=2){{sa.value='0';sb.value='1';onSel();}}
+  try {{
+    const sa=document.getElementById('sel-a'),sb=document.getElementById('sel-b');
+    const ph='<option value="-1">\u2014 Pilih paper \u2014</option>';
+    const opts=PAPERS.map(p=>`<option value="${{p.id}}">${{p.year}} \u00b7 ${{esc(p.short)}}</option>`).join('');
+    sa.innerHTML=ph+opts;sb.innerHTML=ph+opts;
+    document.getElementById('pcnt').textContent=PAPERS.length+' PAPER TERSEDIA';
+    if(PAPERS.length>=2){{sa.value='0';sb.value='1';onSel();}}
+  }} catch(e) {{
+    // Show visible error so we can debug
+    document.body.insertAdjacentHTML('beforeend',
+      `<div style="position:fixed;top:0;left:0;right:0;background:#ff4d6a;color:#fff;
+        font-family:monospace;font-size:13px;padding:10px;z-index:99999;word-break:break-all">
+        JS ERROR: ${{e.message}}<br>PAPERS length: ${{typeof PAPERS !== 'undefined' ? PAPERS.length : 'PAPERS UNDEFINED'}}
+      </div>`
+    );
+  }}
 }}
 init();
 </script>
