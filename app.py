@@ -53,7 +53,7 @@ def _with_fullscreen(html: str, label: str = "") -> str:
 <style>
 #_fsbtn {{
   position: fixed;
-  top: 12px; right: 14px;
+  bottom: 16px; right: 16px;
   z-index: 99999;
   display: flex; align-items: center; gap: 6px;
   padding: 6px 14px;
