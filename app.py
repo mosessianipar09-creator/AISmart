@@ -84,12 +84,11 @@ def _top_keywords(papers: list[dict], n: int = 12) -> list[str]:
 
 def build_topic_river(papers: list[dict]):
     """
-    Returns a Plotly figure: keyword frequency streams over time.
-    Each keyword = one filled area layer. X = year, Y = stacked count.
+    Topic River — streamgraph of keyword evolution over time.
+    FIX: no duplicate legend, bigger fonts, cleaner layout.
     """
     import plotly.graph_objects as go
 
-    # Get all years
     years = sorted(set(
         int(p["year"]) for p in papers
         if str(p.get("year", "")).isdigit() and 1900 < int(p["year"]) <= 2030
@@ -97,12 +96,12 @@ def build_topic_river(papers: list[dict]):
     if len(years) < 2:
         return None
 
-    keywords = _top_keywords(papers, n=10)
+    keywords = _top_keywords(papers, n=8)   # 8 keywords = cleaner legend
     if not keywords:
         return None
 
     # Count keyword frequency per year
-    year_kw_counts: dict[int, dict[str, int]] = {y: {k: 0 for k in keywords} for y in years}
+    year_kw_counts = {y: {k: 0 for k in keywords} for y in years}
     for p in papers:
         y_raw = p.get("year", "")
         if not str(y_raw).isdigit():
@@ -115,13 +114,11 @@ def build_topic_river(papers: list[dict]):
             if t in year_kw_counts[y]:
                 year_kw_counts[y][t] += 1
 
-    # Color palette — cyan to purple
-    colors = [
-        "rgba(0,212,255,",   "rgba(100,180,255,",
-        "rgba(179,157,250,", "rgba(30,232,214,",
-        "rgba(255,122,26,",  "rgba(96,176,255,",
-        "rgba(248,113,113,", "rgba(74,222,128,",
-        "rgba(251,191,36,",  "rgba(232,121,249,",
+    # Distinct colors — easy to tell apart
+    COLORS = [
+        "#00d4ff", "#b39dfa", "#1ee8d6",
+        "#ff7a1a", "#f472b6", "#4ade80",
+        "#facc15", "#f87171",
     ]
 
     fig = go.Figure()
@@ -129,135 +126,186 @@ def build_topic_river(papers: list[dict]):
 
     for ki, kw in enumerate(keywords):
         vals = [year_kw_counts[y][kw] for y in years]
-        # Smooth: simple 1-2-1 average
+        # Smooth with 1-2-1 weighted average
         smoothed = []
         for i in range(len(vals)):
-            neighbors = vals[max(0,i-1):i+2]
-            smoothed.append(sum(neighbors) / len(neighbors))
+            w = vals[max(0,i-1):i+2]
+            weights = [1, 2, 1][:len(w)]
+            smoothed.append(sum(v*wt for v,wt in zip(w,weights)) / sum(weights))
 
-        top_vals    = [c + s for c, s in zip(cumulative, smoothed)]
-        base_vals   = cumulative[:]
-        alpha_fill  = "0.55"
-        alpha_line  = "0.9"
-        c           = colors[ki % len(colors)]
+        top_vals  = [c + s for c, s in zip(cumulative, smoothed)]
+        base_vals = cumulative[:]
+        clr       = COLORS[ki % len(COLORS)]
 
-        # Filled area between cumulative and cumulative+this keyword
-        x_fill = years + years[::-1]
-        y_fill = top_vals + base_vals[::-1]
-
+        # ONE trace per keyword using fill='tonexty' — no duplicates in legend
         fig.add_trace(go.Scatter(
-            x=x_fill, y=y_fill,
-            fill="toself",
-            mode="none",
-            fillcolor=f"{c}{alpha_fill})",
-            name=kw,
-            hoverinfo="skip",
-        ))
-        # Top line
-        fig.add_trace(go.Scatter(
-            x=years, y=top_vals,
+            x=years,
+            y=top_vals,
             mode="lines",
-            line=dict(color=f"{c}{alpha_line})", width=1.5, shape="spline"),
-            name=kw,
-            hovertemplate=f"<b>{kw}</b><br>Tahun: %{{x}}<br>Frekuensi: {'{:.0f}'.format(0)}<extra></extra>",
+            name=kw.upper(),
+            fill="tonexty" if ki > 0 else "tozeroy",
+            fillcolor=clr.replace("#", "rgba(").rstrip(")") if False else _hex_to_rgba(clr, 0.5),
+            line=dict(color=clr, width=2),
+            customdata=[[f"{s:.0f}"] for s in smoothed],
+            hovertemplate=(
+                f"<b style='color:{clr}'>{kw.upper()}</b><br>"
+                "📅 Tahun: <b>%{x}</b><br>"
+                "📊 Frekuensi: <b>%{customdata[0]}</b><extra></extra>"
+            ),
             showlegend=True,
         ))
-        # Update hover with actual values
-        fig.data[-1].customdata = [[f"{v:.0f}"] for v in smoothed]
-        fig.data[-1].hovertemplate = f"<b>{kw}</b><br>Tahun: %{{x}}<br>Frekuensi: %{{customdata[0]}}<extra></extra>"
-
         cumulative = top_vals
 
     fig.update_layout(
-        title=dict(text="🌊 Topic River — Evolusi Topik Riset", font=dict(size=13, color="#e8f4ff")),
-        xaxis=dict(title="Tahun", tickmode="linear", dtick=1, gridcolor="rgba(80,140,220,.08)", color="#7aa8cc"),
-        yaxis=dict(title="Volume Topik", gridcolor="rgba(80,140,220,.08)", color="#7aa8cc"),
+        title=dict(
+            text="🌊 Topic River — Evolusi Topik Riset dari Waktu ke Waktu",
+            font=dict(size=15, color="#e8f4ff", family="Inter, sans-serif"),
+            x=0.02,
+        ),
+        xaxis=dict(
+            title=dict(text="Tahun Publikasi", font=dict(size=13, color="#7aa8cc")),
+            tickmode="linear", dtick=1,
+            gridcolor="rgba(80,140,220,.08)",
+            color="#9ac0e0",
+            tickfont=dict(size=12),
+        ),
+        yaxis=dict(
+            title=dict(text="Volume Kemunculan Topik", font=dict(size=13, color="#7aa8cc")),
+            gridcolor="rgba(80,140,220,.08)",
+            color="#9ac0e0",
+            tickfont=dict(size=12),
+        ),
         hovermode="x unified",
         legend=dict(
-            orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
-            font=dict(size=10, color="#7aa8cc"),
-            bgcolor="rgba(5,17,30,.8)",
+            orientation="h",
+            yanchor="bottom", y=1.02,
+            xanchor="left", x=0,
+            font=dict(size=12, color="#c8daf0", family="JetBrains Mono, monospace"),
+            bgcolor="rgba(5,17,30,.85)",
+            bordercolor="rgba(80,140,220,.2)",
+            borderwidth=1,
+            itemwidth=40,
         ),
-        height=400,
+        height=460,
         **_PLOTLY_DARK,
     )
     return fig
 
 
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    """Convert #rrggbb to rgba(r,g,b,alpha)."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
 def build_research_dna(papers: list[dict]):
     """
-    Returns a Plotly heatmap figure: papers × keywords matrix.
-    Each row = one paper. Each column = one keyword.
-    Color intensity = how strongly that keyword appears in that paper.
+    Research DNA heatmap.
+    FIX: bigger cells, bigger fonts, full paper titles on hover,
+    color scale with more contrast, proper sizing.
     """
     import plotly.graph_objects as go
+    import numpy as np
 
-    keywords = _top_keywords(papers, n=16)
+    keywords = _top_keywords(papers, n=12)   # fewer = bigger cells
     if not keywords:
         return None
 
-    # Score matrix
+    # Score matrix: paper × keyword
     matrix = []
-    labels_y = []
+    x_labels = []
     for p in papers:
         text = (p.get("title", "") or "") + " " + (p.get("abstract", "") or "")
         tokens = _tokenize(text)
         total = len(tokens) or 1
-        freq = collections.Counter(tokens)
-        row = [round(freq.get(kw, 0) / total * 100, 2) for kw in keywords]
+        freq  = collections.Counter(tokens)
+        row   = [round(freq.get(kw, 0) / total * 100, 3) for kw in keywords]
         matrix.append(row)
-        title_short = p["title"][:40] + "…" if len(p["title"]) > 40 else p["title"]
-        labels_y.append(f"{p.get('year','?')}  {title_short}")
+        # Short label for x-axis: "YYYY · Title..."
+        short = p["title"][:32] + "…" if len(p["title"]) > 32 else p["title"]
+        x_labels.append(f"{p.get('year','?')} · {short}")
 
-    # Transpose so keywords are on Y, papers on X
-    import numpy as np
+    # Transpose → keywords on Y, papers on X
     mat = np.array(matrix).T.tolist()
 
-    # Color: black → cyan (custom colorscale)
+    # High-contrast colorscale: near-black → bright cyan → purple peak
     colorscale = [
-        [0.0,  "#05111e"],
-        [0.15, "#0a2240"],
-        [0.4,  "#0d4f6e"],
-        [0.65, "#0096a8"],
-        [0.85, "#00ccdd"],
-        [1.0,  "#b39dfa"],
+        [0.00, "#04111e"],
+        [0.10, "#062840"],
+        [0.30, "#0a4d72"],
+        [0.55, "#0097b2"],
+        [0.78, "#00d4d4"],
+        [1.00, "#c084fc"],
     ]
 
+    # Hover text with full info
     hover_text = []
     for ki, kw in enumerate(keywords):
         row_hover = []
         for pi, p in enumerate(papers):
             score = mat[ki][pi]
+            intensity = (
+                "🔴 Sangat Dominan" if score > 2
+                else "🟡 Cukup Relevan" if score > 0.5
+                else "⚪ Jarang Muncul"
+            )
             row_hover.append(
-                f"<b>{kw}</b><br>"
-                f"Paper: {p['title'][:50]}…<br>"
-                f"Score: {score:.2f}%"
+                f"<b>Keyword: {kw.upper()}</b><br>"
+                f"Paper: {p['title'][:55]}…<br>"
+                f"Tahun: {p.get('year','?')} · Sitasi: {p.get('citations',0):,}<br>"
+                f"Bobot TF: {score:.3f}%<br>"
+                f"{intensity}"
             )
         hover_text.append(row_hover)
 
+    # Dynamic height: enough for keywords + label margin
+    cell_h   = 38
+    fig_h    = max(420, len(keywords) * cell_h + 160)
+
     fig = go.Figure(data=go.Heatmap(
         z=mat,
-        x=[f"{p.get('year','?')}" for p in papers],
-        y=keywords,
+        x=x_labels,
+        y=[kw.upper() for kw in keywords],
         colorscale=colorscale,
         showscale=True,
         colorbar=dict(
-            title=dict(text="Bobot", font=dict(color="#7aa8cc", size=10)),
-            tickfont=dict(color="#7aa8cc", size=9),
-            bgcolor="rgba(5,17,30,.8)",
+            title=dict(text="Bobot TF", font=dict(color="#7aa8cc", size=12)),
+            tickfont=dict(color="#7aa8cc", size=11),
+            bgcolor="rgba(5,17,30,.85)",
             bordercolor="rgba(80,140,220,.2)",
+            len=0.9,
+            thickness=16,
         ),
         hoverinfo="text",
         text=hover_text,
-        xgap=2,
-        ygap=2,
+        xgap=3,
+        ygap=3,
     ))
 
     fig.update_layout(
-        title=dict(text="🧬 Research DNA — Sidik Jari Topik per Paper", font=dict(size=13, color="#e8f4ff")),
-        xaxis=dict(title="Paper (per Tahun)", color="#7aa8cc", tickangle=-35, tickfont=dict(size=9)),
-        yaxis=dict(title="Keyword", color="#7aa8cc", tickfont=dict(size=10)),
-        height=420,
+        title=dict(
+            text="🧬 Research DNA — Sidik Jari Topik per Paper",
+            font=dict(size=15, color="#e8f4ff", family="Inter, sans-serif"),
+            x=0.02,
+        ),
+        xaxis=dict(
+            title=dict(text="Paper", font=dict(size=13, color="#7aa8cc")),
+            color="#9ac0e0",
+            tickangle=-40,
+            tickfont=dict(size=10, family="JetBrains Mono, monospace"),
+            tickmode="array",
+            tickvals=list(range(len(papers))),
+            ticktext=x_labels,
+        ),
+        yaxis=dict(
+            title=dict(text="Keyword", font=dict(size=13, color="#7aa8cc")),
+            color="#9ac0e0",
+            tickfont=dict(size=13, family="JetBrains Mono, monospace"),
+            automargin=True,
+        ),
+        height=fig_h,
+        margin=dict(l=130, r=20, t=60, b=140),
         **_PLOTLY_DARK,
     )
     return fig
@@ -287,15 +335,12 @@ def build_contradiction_data(papers: list[dict]) -> list[dict]:
 
     def signals(text: str):
         tokens = set(re.findall(r"[a-z]+", text.lower()))
-        pos = tokens & POSITIVE_SIGNALS
-        neg = tokens & NEGATIVE_SIGNALS
-        return pos, neg
+        return tokens & POSITIVE_SIGNALS, tokens & NEGATIVE_SIGNALS
 
     def shared_keywords(p1, p2):
         t1 = set(_tokenize((p1.get("title","") or "") + " " + (p1.get("abstract","") or "")))
         t2 = set(_tokenize((p2.get("title","") or "") + " " + (p2.get("abstract","") or "")))
-        shared = t1 & t2
-        return shared - _STOPWORDS
+        return (t1 & t2) - _STOPWORDS
 
     results = []
     for i, p1 in enumerate(papers):
@@ -309,7 +354,6 @@ def build_contradiction_data(papers: list[dict]) -> list[dict]:
             pos1, neg1 = signals(text1)
             pos2, neg2 = signals(text2)
 
-            # Count direct opposing signals
             conflict_count = 0
             conflict_terms = []
             for a_pos, b_neg in [(pos1, neg2), (pos2, neg1)]:
@@ -319,32 +363,29 @@ def build_contradiction_data(papers: list[dict]) -> list[dict]:
                             conflict_count += 1
                             conflict_terms.append(f"{a} ↔ {b}")
 
-            # Base score on shared keywords + opposing signals
-            base = min(len(shared) * 4, 40)
+            base         = min(len(shared) * 4, 40)
             signal_score = min(conflict_count * 15, 45)
-            # Add score if year gap > 3 (older vs newer may contradict)
             try:
                 yr_gap = abs(int(p1.get("year", 0)) - int(p2.get("year", 0)))
             except Exception:
                 yr_gap = 0
-            time_score = min(yr_gap * 2, 15)
-
+            time_score   = min(yr_gap * 2, 15)
             conflict_score = min(100, base + signal_score + time_score)
             if conflict_score < 20:
                 continue
 
             results.append({
-                "paper1_title": p1["title"],
-                "paper2_title": p2["title"],
-                "paper1_year":  p1.get("year", "?"),
-                "paper2_year":  p2.get("year", "?"),
-                "paper1_cite":  p1.get("citations", 0),
-                "paper2_cite":  p2.get("citations", 0),
-                "shared_kws":   sorted(list(shared))[:6],
+                "paper1_title":   p1["title"],
+                "paper2_title":   p2["title"],
+                "paper1_year":    p1.get("year", "?"),
+                "paper2_year":    p2.get("year", "?"),
+                "paper1_cite":    p1.get("citations", 0),
+                "paper2_cite":    p2.get("citations", 0),
+                "shared_kws":     sorted(list(shared))[:6],
                 "conflict_terms": list(set(conflict_terms))[:4],
                 "conflict_score": conflict_score,
                 "label": (
-                    "⚡ KONFLIK TINGGI" if conflict_score >= 65
+                    "⚡ KONFLIK TINGGI"      if conflict_score >= 65
                     else "⚠️ BERPOTENSI BERBEDA" if conflict_score >= 40
                     else "🔍 PERLU DICERMATI"
                 ),
@@ -359,39 +400,92 @@ def build_contradiction_data(papers: list[dict]) -> list[dict]:
 
 
 def build_contradiction_chart(pairs: list[dict]):
-    """Bar chart of top conflict pairs."""
+    """
+    Contradiction bar chart.
+    FIX: color gradient per score level, bigger fonts,
+    score badge annotations, clear visual hierarchy.
+    """
     import plotly.graph_objects as go
 
     if not pairs:
         return None
 
     top = pairs[:8]
-    labels = [
-        f"{p['paper1_title'][:28]}… vs {p['paper2_title'][:28]}…"
-        for p in top
-    ]
+
+    # Better labels: "A (YYYY) vs B (YYYY)"
+    labels = []
+    for p in top:
+        a = p["paper1_title"][:30] + "…" if len(p["paper1_title"]) > 30 else p["paper1_title"]
+        b = p["paper2_title"][:30] + "…" if len(p["paper2_title"]) > 30 else p["paper2_title"]
+        labels.append(f"{a}  ↔  {b}")
+
     scores = [p["conflict_score"] for p in top]
     colors = [p["label_color"] for p in top]
 
-    fig = go.Figure(go.Bar(
+    # Custom hover text
+    hover = [
+        f"<b>{p['label']}</b><br>"
+        f"Score: <b>{p['conflict_score']}</b>/100<br>"
+        f"Paper A: {p['paper1_title'][:60]}<br>"
+        f"Paper B: {p['paper2_title'][:60]}<br>"
+        f"Keyword bersama: {', '.join(p['shared_kws'][:4])}<br>"
+        + (f"Sinyal berlawanan: {', '.join(p['conflict_terms'][:3])}" if p['conflict_terms'] else "")
+        for p in top
+    ]
+
+    fig = go.Figure()
+
+    # Colored bars with gradient opacity
+    fig.add_trace(go.Bar(
         x=scores,
         y=labels,
         orientation="h",
         marker=dict(
             color=colors,
-            opacity=0.85,
-            line=dict(color="rgba(255,255,255,.1)", width=0.5),
+            opacity=[0.65 + 0.35 * (s / 100) for s in scores],
+            line=dict(color="rgba(255,255,255,.15)", width=1),
         ),
-        hovertemplate=(
-            "<b>Conflict Score: %{x}</b><br>"
-            "%{y}<extra></extra>"
-        ),
+        text=[f"  {s}" for s in scores],
+        textposition="inside",
+        textfont=dict(size=13, color="white", family="JetBrains Mono, monospace"),
+        hovertemplate="%{customdata}<extra></extra>",
+        customdata=hover,
     ))
+
+    # Add score reference lines
+    for threshold, label, clr in [(65, "⚡ Konflik Tinggi", "#f87171"), (40, "⚠️ Berpotensi Beda", "#fb923c")]:
+        fig.add_vline(
+            x=threshold, line_dash="dash",
+            line_color=clr, line_width=1.2, opacity=0.5,
+            annotation=dict(
+                text=label, font=dict(size=10, color=clr),
+                yanchor="bottom", y=1.02,
+            ),
+        )
+
+    row_h  = 52
+    fig_h  = max(320, len(top) * row_h + 100)
+
     fig.update_layout(
-        title=dict(text="⚡ Contradiction Score — Pasangan Paper Berpotensi Kontradiktif", font=dict(size=13, color="#e8f4ff")),
-        xaxis=dict(title="Conflict Score (0–100)", range=[0, 105], color="#7aa8cc"),
-        yaxis=dict(tickfont=dict(size=9), color="#7aa8cc"),
-        height=max(280, len(top) * 42),
+        title=dict(
+            text="⚡ Contradiction Radar — Pasangan Paper Berpotensi Kontradiktif",
+            font=dict(size=15, color="#e8f4ff", family="Inter, sans-serif"),
+            x=0.02,
+        ),
+        xaxis=dict(
+            title=dict(text="Conflict Score  (0 = sejalan · 100 = bertentangan penuh)", font=dict(size=12, color="#7aa8cc")),
+            range=[0, 108],
+            color="#9ac0e0",
+            tickfont=dict(size=12),
+            gridcolor="rgba(80,140,220,.1)",
+        ),
+        yaxis=dict(
+            color="#9ac0e0",
+            tickfont=dict(size=11, family="JetBrains Mono, monospace"),
+            automargin=True,
+        ),
+        height=fig_h,
+        margin=dict(l=20, r=20, t=60, b=20),
         **_PLOTLY_DARK,
     )
     return fig
