@@ -35,6 +35,7 @@ from graph_layer import (
 from graph_influence import render_influence, influence_stats
 from graph_gap import render_gap, gap_stats
 from topic_river import render_topic_river, river_stats
+from contradiction_detector import render_contradiction
 
 import re
 import math
@@ -1063,7 +1064,6 @@ Berikan analisis dalam format:
                          key="btn_contra", use_container_width=True):
                 with st.spinner("Membangun arena…"):
                     try:
-                        from contradiction_detector import render_contradiction
                         html = render_contradiction(papers, height=620)
                         st.session_state.contra_pairs    = html   # reuse key, store HTML
                         st.session_state.contra_analysis = ""
