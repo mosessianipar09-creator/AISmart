@@ -232,36 +232,37 @@ def render_roadmap(papers: list[dict], height: int = 680) -> str:
     tier_rows_html = ""
     for tier in ["pioneer", "established", "emerging"]:
         info = tier_info[tier]
-        cells_html = ""
+
+        # Build columns for this tier — one column per year that has cards
+        cols_html = ""
         for year in all_years:
             year_nodes = grid[tier].get(year, [])
-            if year_nodes:
-                cards_html = "".join(
-                    make_card(n, path_order.get(n["id"]))
-                    for n in sorted(year_nodes, key=lambda x: -x["citations"])
-                )
-                cells_html += f'<div class="yr-cell">{cards_html}</div>'
-            else:
-                cells_html += '<div class="yr-cell yr-empty"></div>'
+            if not year_nodes:
+                continue
+            cards_in_col = "".join(
+                make_card(n, path_order.get(n["id"]))
+                for n in sorted(year_nodes, key=lambda x: -x["citations"])
+            )
+            cols_html += (
+                f'<div class="col-wrap">'
+                f'<div class="col-year">{year}</div>'
+                f'{cards_in_col}'
+                f'</div>'
+            )
 
-        tier_rows_html += f'''
-<div class="tier-row" style="--tier-bg:{info["bg"]};--tier-border:{info["border"]}">
-  <div class="tier-label" style="color:{info["color"]}">{info["label"]}</div>
-  <div class="tier-scroll">
-    <div class="tier-inner">
-      {"".join(
-          f'<div class="col-wrap"><div class="col-year">{yr}</div>'
-          + "".join(
-              make_card(n, path_order.get(n["id"]))
-              for n in sorted(grid[tier].get(yr, []), key=lambda x: -x["citations"])
-          )
-          + '</div>'
-          for yr in all_years
-          if grid[tier].get(yr)
-      )}
-    </div>
-  </div>
-</div>'''
+        # If tier has no cards at all, show empty placeholder
+        if not cols_html:
+            cols_html = '<div class="tier-empty-msg">Tidak ada paper di tier ini</div>'
+
+        tier_rows_html += (
+            f'<div class="tier-row" '
+            f'style="--tier-bg:{info["bg"]};--tier-border:{info["border"]}">'
+            f'<div class="tier-label" style="color:{info["color"]}">{info["label"]}</div>'
+            f'<div class="tier-scroll">'
+            f'<div class="tier-inner">{cols_html}</div>'
+            f'</div>'
+            f'</div>'
+        )
 
     # Build modal data JSON for JS
     modal_map = {}
@@ -595,6 +596,10 @@ html,body{{
   transition:all .15s;
 }}
 .m-btn:hover{{background:rgba(74,158,255,.18);border-color:rgba(74,158,255,.5);}}
+.tier-empty-msg{{
+  font-family:var(--mono);font-size:9px;color:var(--text-lo);
+  letter-spacing:1px;padding:20px;opacity:.5;
+}}
 </style>
 </head>
 <body>
