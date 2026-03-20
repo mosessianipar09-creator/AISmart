@@ -681,7 +681,7 @@ with tab1:
 
     if btn_search and topic:
         with st.spinner("Menghubungi API..."):
-            papers, log = search_papers(topic, limit=8, debug=debug_mode)
+            papers, log = search_papers(topic, limit=50, debug=debug_mode)
             st.session_state.papers       = papers
             st.session_state.active_topic = topic
             st.session_state.analysis_text = ""
@@ -789,7 +789,7 @@ with tab1:
                 with st.spinner("Gemini menganalisis..."):
                     try:
                         resp = model.generate_content(
-                            build_analysis_prompt(st.session_state.active_topic, papers)
+                            build_analysis_prompt(st.session_state.active_topic, papers[:20])
                         )
                         st.session_state.analysis_text = resp.text
                         st.rerun()
