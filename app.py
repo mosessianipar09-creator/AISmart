@@ -34,6 +34,7 @@ from graph_layer import (
 )
 from graph_influence import render_influence, influence_stats
 from graph_gap import render_gap, gap_stats
+from topic_river import render_topic_river, river_stats
 
 import re
 import math
@@ -80,124 +81,6 @@ def _top_keywords(papers: list[dict], n: int = 12) -> list[str]:
         for t in _tokenize(text):
             freq[t] += 1
     return [kw for kw, _ in freq.most_common(n)]
-
-
-def build_topic_river(papers: list[dict]):
-    """
-    Topic River — streamgraph of keyword evolution over time.
-    FIX: no duplicate legend, bigger fonts, cleaner layout.
-    """
-    import plotly.graph_objects as go
-
-    years = sorted(set(
-        int(p["year"]) for p in papers
-        if str(p.get("year", "")).isdigit() and 1900 < int(p["year"]) <= 2030
-    ))
-    if len(years) < 2:
-        return None
-
-    keywords = _top_keywords(papers, n=8)   # 8 keywords = cleaner legend
-    if not keywords:
-        return None
-
-    # Count keyword frequency per year
-    year_kw_counts = {y: {k: 0 for k in keywords} for y in years}
-    for p in papers:
-        y_raw = p.get("year", "")
-        if not str(y_raw).isdigit():
-            continue
-        y = int(y_raw)
-        if y not in year_kw_counts:
-            continue
-        text = (p.get("title", "") or "") + " " + (p.get("abstract", "") or "")
-        for t in _tokenize(text):
-            if t in year_kw_counts[y]:
-                year_kw_counts[y][t] += 1
-
-    # Distinct colors — easy to tell apart
-    COLORS = [
-        "#00d4ff", "#b39dfa", "#1ee8d6",
-        "#ff7a1a", "#f472b6", "#4ade80",
-        "#facc15", "#f87171",
-    ]
-
-    fig = go.Figure()
-    cumulative = [0.0] * len(years)
-
-    for ki, kw in enumerate(keywords):
-        vals = [year_kw_counts[y][kw] for y in years]
-        # Smooth with 1-2-1 weighted average
-        smoothed = []
-        for i in range(len(vals)):
-            w = vals[max(0,i-1):i+2]
-            weights = [1, 2, 1][:len(w)]
-            smoothed.append(sum(v*wt for v,wt in zip(w,weights)) / sum(weights))
-
-        top_vals  = [c + s for c, s in zip(cumulative, smoothed)]
-        base_vals = cumulative[:]
-        clr       = COLORS[ki % len(COLORS)]
-
-        # ONE trace per keyword using fill='tonexty' — no duplicates in legend
-        fig.add_trace(go.Scatter(
-            x=years,
-            y=top_vals,
-            mode="lines",
-            name=kw.upper(),
-            fill="tonexty" if ki > 0 else "tozeroy",
-            fillcolor=clr.replace("#", "rgba(").rstrip(")") if False else _hex_to_rgba(clr, 0.5),
-            line=dict(color=clr, width=2),
-            customdata=[[f"{s:.0f}"] for s in smoothed],
-            hovertemplate=(
-                f"<b style='color:{clr}'>{kw.upper()}</b><br>"
-                "📅 Tahun: <b>%{x}</b><br>"
-                "📊 Frekuensi: <b>%{customdata[0]}</b><extra></extra>"
-            ),
-            showlegend=True,
-        ))
-        cumulative = top_vals
-
-    fig.update_layout(
-        title=dict(
-            text="🌊 Topic River — Evolusi Topik Riset dari Waktu ke Waktu",
-            font=dict(size=15, color="#e8f4ff", family="Inter, sans-serif"),
-            x=0.02,
-        ),
-        xaxis=dict(
-            title=dict(text="Tahun Publikasi", font=dict(size=13, color="#7aa8cc")),
-            tickmode="linear", dtick=1,
-            gridcolor="rgba(80,140,220,.08)",
-            color="#9ac0e0",
-            tickfont=dict(size=12),
-        ),
-        yaxis=dict(
-            title=dict(text="Volume Kemunculan Topik", font=dict(size=13, color="#7aa8cc")),
-            gridcolor="rgba(80,140,220,.08)",
-            color="#9ac0e0",
-            tickfont=dict(size=12),
-        ),
-        hovermode="x unified",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom", y=1.02,
-            xanchor="left", x=0,
-            font=dict(size=12, color="#c8daf0", family="JetBrains Mono, monospace"),
-            bgcolor="rgba(5,17,30,.85)",
-            bordercolor="rgba(80,140,220,.2)",
-            borderwidth=1,
-            itemwidth=40,
-        ),
-        height=460,
-        **_PLOTLY_DARK,
-    )
-    return fig
-
-
-def _hex_to_rgba(hex_color: str, alpha: float) -> str:
-    """Convert #rrggbb to rgba(r,g,b,alpha)."""
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    return f"rgba({r},{g},{b},{alpha})"
-
 
 def build_research_dna(papers: list[dict]):
     """
@@ -1001,62 +884,82 @@ with tab3:
         # SUB-TAB 1 — TOPIC RIVER
         # ──────────────────────────────────────────────
         with sub1:
-            st.markdown("##### 🌊 Topic River")
+            st.markdown("##### 🌊 Topic River — Research Momentum Dashboard")
             st.caption(
-                "Bagaimana topik riset berevolusi dari tahun ke tahun. "
-                "Setiap aliran berwarna = satu keyword. Makin tebal = makin dominan."
+                "3 panel terintegrasi: **Velocity Ranking** (keyword mana yang sedang meledak) · "
+                "**Streamgraph** (sejarah volume) · **2-Year Forecast** (proyeksi tren). "
+                "Klik keyword di panel kiri untuk focus semua panel serentak."
             )
 
             if st.button("▶️ Generate Topic River", key="btn_river", use_container_width=True):
-                with st.spinner("Menganalisis evolusi topik…"):
+                with st.spinner("Membangun dashboard…"):
                     try:
-                        fig = build_topic_river(papers)
-                        st.session_state.river_fig      = fig
-                        st.session_state.river_analysis = ""
+                        html = render_topic_river(papers, height=600)
+                        rs   = river_stats(papers)
+                        st.session_state.river_fig          = html
+                        st.session_state.river_stats_data   = rs
+                        st.session_state.river_analysis     = ""
                     except Exception as exc:
                         st.error(f"Gagal: {exc}")
 
             if st.session_state.river_fig:
-                st.plotly_chart(st.session_state.river_fig, use_container_width=True)
+                rs = st.session_state.get("river_stats_data") or {}
+
+                # Metric cards
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Total Keyword",  rs.get("total_keywords", "—"))
+                m2.metric("Rentang Tahun",  rs.get("year_span",       "—"))
+                m3.metric("🔴 Topik Naik",  rs.get("top_rising",      "—"))
+                m4.metric("🔵 Topik Turun", rs.get("top_declining",   "—"))
+                st.markdown("---")
+
+                components.html(
+                    _with_fullscreen(st.session_state.river_fig),
+                    height=622, scrolling=False
+                )
+
+                st.markdown("---")
 
                 # Lazy AI analysis
                 if st.session_state.river_analysis:
-                    st.markdown("---")
                     st.markdown(st.session_state.river_analysis)
-                    if st.button("🔄 Regenerasi", key="btn_river_regen"):
+                    if st.button("🔄 Regenerasi Analisis", key="btn_river_regen"):
                         st.session_state.river_analysis = ""
                         st.rerun()
                 else:
                     if st.button("🔬 Analisis Mendalam — Apa yang terjadi di bidang ini?",
                                  key="btn_river_ai", use_container_width=True):
-                        kws = _top_keywords(papers, n=8)
+                        kws = rs.get("top_rising","") and [rs["top_rising"]] or []
                         years_list = sorted(set(
                             int(p["year"]) for p in papers
                             if str(p.get("year","")).isdigit()
                         ))
+                        kw_list = ", ".join(
+                            p["title"].split()[0] for p in papers[:5]
+                        )
                         prompt = f"""Kamu adalah analis riset ilmiah senior.
 
 Topik: "{topic}"
 Rentang tahun: {min(years_list) if years_list else '?'}–{max(years_list) if years_list else '?'}
 Jumlah paper: {len(papers)}
-Keyword paling dominan: {', '.join(kws)}
+Keyword naik: {rs.get('top_rising','—')} · Keyword turun: {rs.get('top_declining','—')}
 
 Data paper:
 """ + "\n".join(f"- {p['title']} ({p.get('year','?')}) · {p.get('citations',0):,} sitasi" for p in papers) + """
 
-Berikan analisis singkat dan tajam (3-4 paragraf) dalam format:
+Berikan analisis dalam format:
 
 ## 🌊 Arus Utama
 [Topik apa yang mendominasi dan mengapa]
 
 ## 📈 Topik Naik Daun
-[Keyword mana yang frekuensinya meningkat belakangan ini]
+[Keyword yang frekuensinya meningkat — apa artinya untuk riset baru?]
 
 ## 📉 Topik yang Mulai Ditinggalkan
-[Keyword yang dulu ramai tapi sekarang meredup]
+[Keyword yang meredup — apakah sudah terjawab atau memang sudah tidak relevan?]
 
 ## 💡 Peluang Tersembunyi
-[Celah yang muncul dari pola evolusi ini]"""
+[Celah yang muncul dari pola evolusi ini — cocok untuk topik penelitian baru]"""
 
                         with st.spinner("Gemini menganalisis arus topik…"):
                             try:
@@ -1065,6 +968,12 @@ Berikan analisis singkat dan tajam (3-4 paragraf) dalam format:
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Gagal: {e}")
+
+                if st.button("🔄 Reset", key="btn_river_reset"):
+                    st.session_state.river_fig        = None
+                    st.session_state.river_stats_data = None
+                    st.session_state.river_analysis   = ""
+                    st.rerun()
 
         # ──────────────────────────────────────────────
         # SUB-TAB 2 — RESEARCH DNA
