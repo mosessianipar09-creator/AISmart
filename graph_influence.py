@@ -1,41 +1,72 @@
 """
 graph_influence.py
 ==================
-Influence Map — Visualisasi hubungan antar paper berbasis sitasi.
+Influence Map — Fitur 2 dari Research Intelligence Center
 
-Tampilkan jaringan 50-100 paper sebagai force-directed graph:
-  - Node besar  = banyak dikutip
-  - Warna node  = ring (pusat / leluhur / penerus / tetangga)
-  - Garis tebal = koneksi kuat
-  - Klik node   → panel detail + highlight koneksi
-  - Search box  → filter/highlight paper by judul
-  - Drag node   → reposition manual
-  - Zoom/pan    → scroll atau tombol ± 
+Mengubah jaringan sitasi menjadi peta tata surya interaktif:
+  Paper pilihan  = matahari (pusat, berwarna emas berpendar)
+  Ring 1 (biru)  = paper yang DIKUTIP oleh pusat  → "leluhur intelektual"
+  Ring 2 (hijau) = paper yang MENGUTIP pusat      → "keturunan/penerus"
+  Ring 3 (abu)   = paper 2 derajat pemisahan      → "jaringan tidak langsung"
+
+Interaksi canggih:
+  · Klik node non-pusat  → re-center dengan smooth orbit transition animation
+  · Hover node           → tooltip kaya: abstrak, tahun, sitasi, venue, ring position
+  · Toggle PARTICLES     → animasi partikel aliran pengaruh (canvas overlay)
+  · Toggle ORBITS        → tampilkan/sembunyikan cincin orbit beranimasi
+  · Toggle HEATMAP       → warna node berdasarkan jarak & pengaruh dari pusat
+  · Mode COMPARE         → split-view dua influence map dengan overlay deteksi node bersama
+  · Dropdown selector    → pilih paper pusat dari daftar
+  · Panel stats kanan    → statistik jaringan yang update otomatis saat re-center
+  · Klik di luar         → tutup detail panel
+
+Arsitektur rendering:
+  SVG    = struktur statis (orbit rings, edges, node shapes, labels)
+  Canvas = animasi dinamis (particle system — partikel mengalir sepanjang edges)
 
 Fungsi publik:
-    render_influence(papers, height)   → str  HTML siap embed di Streamlit
-    influence_stats(papers, center_id) → dict statistik untuk metric cards
-    build_influence_data(papers)       → dict data mentah (nodes + edges)
+  render_influence(papers, height)         → str   HTML siap embed di Streamlit
+  influence_stats(papers, center_id)       → dict  statistik untuk metric cards Streamlit
+  build_influence_data(papers)             → dict  data mentah (berguna untuk testing)
+
+Kontrak interface untuk graph_layer.py:
+  from graph_influence import render_influence, influence_stats, build_influence_data
 """
 
-from __future__ import annotations
+from __future__ import annotations  # PEP 563 — lazy annotations; safe on Python ≥3.7
 
 import math
 import json
-import sys
 import streamlit as st
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from data_layer import _raw_get
 
-_R3_MIN_CITATIONS: int = 20
-_FETCH_WORKERS: int = 8
+# Threshold sitasi minimum untuk node Ring-3 (tetangga API)
+# Naikkan nilainya jika ring-3 terlalu ramai; turunkan untuk lebih inklusif
+_R3_MIN_CITATIONS: int = 30
 
 
 # ─────────────────────────────────────────────────────────────────
-# FETCH
+# 1. FETCH CITATION NETWORK
 # ─────────────────────────────────────────────────────────────────
 
-def _do_fetch(paper_id: str) -> dict:
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_influence_refs(paper_id: str) -> dict:
+    """
+    Ambil daftar referensi (paper yang dikutip) dan sitasi (paper yang mengutip)
+    dari Semantic Scholar untuk satu paper_id.
+
+    Menggunakan cache Streamlit 1 jam — aman dipanggil berulang kali.
+    Mengembalikan dict kosong jika paper_id tidak valid atau API gagal.
+
+    Returns:
+        {
+          "references": [{"paperId": ..., "title": ..., "year": ..., "citationCount": ...}],
+          "citations":  [{"paperId": ..., "title": ..., "year": ..., "citationCount": ...}]
+        }
+    """
+    if not paper_id or paper_id.startswith("p"):
+        return {"references": [], "citations": []}
+
     url    = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}"
     params = {
         "fields": (
@@ -51,787 +82,1491 @@ def _do_fetch(paper_id: str) -> dict:
             "references": data.get("references", []),
             "citations":  data.get("citations",  [])
         }
-    except Exception as exc:
-        print(f"[graph_influence] fetch failed {paper_id!r}: {exc}", file=sys.stderr)
+    except Exception as _exc:                          # FIXED: log error, don't swallow silently
+        import sys
+        print(f"[graph_influence] fetch_influence_refs({paper_id!r}) failed: {_exc}", file=sys.stderr)
         return {"references": [], "citations": []}
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_refs(paper_id: str) -> dict:
-    if not paper_id or paper_id.startswith("local_"):
-        return {"references": [], "citations": []}
-    return _do_fetch(paper_id)
-
-
-def _fetch_all(pids: list[str]) -> dict[str, dict]:
-    """Fetch semua refs secara parallel — jauh lebih cepat dari sequential."""
-    result = {}
-    real   = [p for p in pids if p and not p.startswith("local_")]
-    for p in pids:
-        if p not in real:
-            result[p] = {"references": [], "citations": []}
-    if not real:
-        return result
-    with ThreadPoolExecutor(max_workers=min(_FETCH_WORKERS, len(real))) as ex:
-        futures = {ex.submit(fetch_refs, p): p for p in real}
-        for f in as_completed(futures):
-            pid = futures[f]
-            try:
-                result[pid] = f.result()
-            except Exception as exc:
-                print(f"[graph_influence] parallel fetch error {pid!r}: {exc}", file=sys.stderr)
-                result[pid] = {"references": [], "citations": []}
-    return result
-
-
-# ─────────────────────────────────────────────────────────────────
-# NORMALIZE
-# ─────────────────────────────────────────────────────────────────
-
-def _pid(paper: dict, idx: int) -> str:
+def _extract_pid(paper: dict) -> str:
+    """Ekstrak Semantic Scholar paper ID dari URL paper."""
     link = paper.get("link", "")
     if "semanticscholar.org/paper/" in link:
         return link.split("/paper/")[-1].strip("/")
-    slug = (paper.get("title", "") or f"paper_{idx}")[:30].replace(" ", "_")
-    return f"local_{idx}_{slug}"
+    return ""
 
 
-def _int(val, default=0) -> int:
+# ─────────────────────────────────────────────────────────────────
+# 2. DATA PROCESSING
+# ─────────────────────────────────────────────────────────────────
+
+def _safe_int(val, default: int = 0) -> int:
+    """Konversi nilai citations ke int aman — handle 'N/A', '1,234', None, dsb."""
+    if val is None or val == "":
+        return default
     try:
+        # Hapus koma ribuan sebelum konversi (e.g. "1,234" → 1234)
         return max(0, int(str(val).replace(",", "").strip()))
-    except Exception:
+    except (ValueError, TypeError):
         return default
 
 
-def _year(val) -> int:
-    try:
-        y = int(str(val).strip())
-        return y if 1900 < y <= 2030 else 2020
-    except Exception:
-        return 2020
-
-
-def _authors(val) -> str:
+def _safe_authors(val) -> str:
+    """Konversi field 'authors' ke string aman — handle str, list, None."""
+    if val is None:
+        return "N/A"
     if isinstance(val, (list, tuple)):
         val = ", ".join(str(v).strip() for v in val if v)
-    return str(val or "").strip() or "N/A"
+    result = str(val).strip()
+    return result or "N/A"
 
 
-def _norm(p: dict, idx: int) -> dict:
-    pid   = _pid(p, idx)
-    title = (p.get("title", "") or "Untitled").strip()
-    abstr = (p.get("abstract", "") or "").strip()
+def _normalize_paper(p: dict, idx: int) -> dict:
+    """
+    Normalisasi satu paper dict dari search_papers() menjadi format
+    yang konsisten untuk seluruh modul ini.
+    """
+    link = p.get("link", "")
+    pid  = _extract_pid(p)
+    if not pid:
+        pid = f"p{idx}_{p.get('title','x')[:20].replace(' ','_')}"
+
+    title    = (p.get("title",    "") or "Untitled").strip()
+    abstract = (p.get("abstract", "") or "Abstrak tidak tersedia.").strip()
+    year_raw = p.get("year", "")
+    try:
+        year = int(str(year_raw).strip())
+        if not (1900 < year <= 2030):
+            year = 2020
+    except (ValueError, TypeError):
+        year = 2020
+
+    citations = _safe_int(p.get("citations", 0))  # FIXED: safe int, handles "N/A"/"1,234"/None
+
     return {
-        "id":        pid,
-        "title":     title,
-        "short":     (title[:60] + "…") if len(title) > 60 else title,
-        "authors":   _authors(p.get("authors")),
-        "year":      _year(p.get("year")),
-        "citations": _int(p.get("citations", 0)),
-        "venue":     (p.get("venue", "") or "").strip() or "—",
-        "abstract":  (abstr[:300] + "…") if len(abstr) > 300 else abstr,
-        "link":      p.get("link", ""),
+        "id":          pid,
+        "title":       title,
+        "title_short": (title[:55] + "…") if len(title) > 55 else title,
+        "authors":     _safe_authors(p.get("authors")),
+        "year":        year,
+        "citations":   citations,
+        "venue":       (p.get("venue",    "") or "Unknown Venue").strip() or "Unknown Venue",
+        "abstract":    (abstract[:240] + "…") if len(abstract) > 240 else abstract,
+        "link":        link,
+        "source":      p.get("source", "unknown"),
+        "is_main":     True,   # paper dari hasil pencarian utama
     }
 
 
-# ─────────────────────────────────────────────────────────────────
-# BUILD GRAPH DATA
-# ─────────────────────────────────────────────────────────────────
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def build_influence_data(papers: list[dict]) -> dict:
+def _build_one_config(
+    center_id: str,
+    papers_map: dict,
+    refs_cache: dict
+) -> dict:
     """
-    Build nodes + edges untuk seluruh paper.
+    Bangun konfigurasi influence map untuk SATU paper sebagai pusat.
 
-    Node fields: id, title, short, authors, year, citations, venue, abstract, link, ring
-    Edge fields: source, target, weight
+    Algoritma penetapan ring:
+      Ring 1 — paper dari papers_map yang ada dalam references center
+               ATAU (fallback) paper lebih lama dari center
+      Ring 2 — paper dari papers_map yang ada dalam citations center
+               ATAU (fallback) paper lebih baru dari center
+      Ring 3 — paper tetangga luar dari refs API yang tidak ada di papers_map
+               (hanya jika citationCount > 30)
 
-    Ring assignment (relatif terhadap paper paling banyak dikutip):
-      'center' → paper dengan sitasi terbanyak
-      'r1'     → dikutip oleh center (leluhur intelektual)
-      'r2'     → mengutip center (penerus)
-      'r3'     → koneksi tidak langsung / tetangga API
-
-    Returns:
-        {
-          "nodes":     [NodeDict, ...],
-          "edges":     [EdgeDict, ...],
-          "center_id": str
-        }
+    Returns dict:
+      {
+        "ring1": [id, ...],
+        "ring2": [id, ...],
+        "ring3_extra": [{node dict}, ...],  # node baru dari API
+        "edges": [{src, dst, type, weight}, ...],
+        "stats": {ancestors, descendants, extra_neighbors, ...}
+      }
     """
-    if not papers:
-        return {"nodes": [], "edges": [], "center_id": ""}
+    center = papers_map[center_id]
+    refs_data = refs_cache.get(center_id, {"references": [], "citations": []})
 
-    # Normalize & deduplicate
-    nodes_raw = []
-    seen_ids: dict = {}
-    for i, p in enumerate(papers):
-        n = _norm(p, i)
-        if n["id"] in seen_ids:
-            n["id"] = n["id"] + f"_d{i}"
-        seen_ids[n["id"]] = True
-        nodes_raw.append(n)
+    # Set paper IDs yang diketahui dari referensi & sitasi API
+    # FIXED: filter out None/empty paperId to avoid "" polluting the sets
+    ref_ids  = {r.get("paperId") for r in refs_data.get("references", [])
+                if r.get("paperId")}
+    cite_ids = {c.get("paperId") for c in refs_data.get("citations",  [])
+                if c.get("paperId")}
 
-    pmap = {n["id"]: n for n in nodes_raw}
-
-    # Default center = paper paling banyak dikutip
-    center_id = max(pmap, key=lambda k: pmap[k]["citations"])
-
-    # Fetch semua refs secara parallel
-    refs_cache = _fetch_all(list(pmap.keys()))
-
-    # Assign ring untuk setiap node relatif terhadap center
-    center    = pmap[center_id]
-    refs_data = refs_cache.get(center_id, {})
-    ref_ids   = {r.get("paperId") for r in refs_data.get("references", []) if r.get("paperId")}
-    cite_ids  = {c.get("paperId") for c in refs_data.get("citations",  []) if c.get("paperId")}
-
-    for pid, node in pmap.items():
-        if pid == center_id:
-            node["ring"] = "center"
-        elif pid in ref_ids:
-            node["ring"] = "r1"
-        elif pid in cite_ids:
-            node["ring"] = "r2"
-        else:
-            # Fallback temporal
-            if node["year"] < center["year"]:
-                node["ring"] = "r1"
-            elif node["year"] > center["year"]:
-                node["ring"] = "r2"
-            else:
-                node["ring"] = "r1" if node["citations"] >= center["citations"] else "r2"
-
-    # Tambah tetangga luar (ring 3) dari API — max 30 node tambahan
-    r3_nodes  = []
-    seen_all  = set(pmap.keys())
-    api_pool  = refs_data.get("references", []) + refs_data.get("citations", [])
-    api_pool  = sorted(api_pool, key=lambda x: x.get("citationCount", 0), reverse=True)
-
-    for nd in api_pool:
-        nid  = nd.get("paperId", "")
-        ntit = (nd.get("title", "") or "").strip()
-        nc   = nd.get("citationCount", 0) or 0
-        if nid and nid not in seen_all and ntit and nc > _R3_MIN_CITATIONS:
-            r3_nodes.append({
-                "id":        nid,
-                "title":     ntit,
-                "short":     (ntit[:60] + "…") if len(ntit) > 60 else ntit,
-                "authors":   "—",
-                "year":      nd.get("year", "?") or "?",
-                "citations": nc,
-                "venue":     "—",
-                "abstract":  "Paper dari jaringan sitasi eksternal.",
-                "link":      f"https://www.semanticscholar.org/paper/{nid}",
-                "ring":      "r3",
-            })
-            seen_all.add(nid)
-            if len(r3_nodes) >= 30:
-                break
-
-    all_nodes = list(pmap.values()) + r3_nodes
-    all_pmap  = {n["id"]: n for n in all_nodes}
-
-    # Build edges
-    edges      = []
-    seen_edges: set = set()
-
-    def add_edge(src, dst, w):
-        key = (min(src, dst), max(src, dst))
-        if key not in seen_edges and src in all_pmap and dst in all_pmap:
-            seen_edges.add(key)
-            edges.append({"source": src, "target": dst, "weight": round(w, 3)})
-
-    # Center → ring1 (references) dan center ← ring2 (citations)
-    for ref in refs_data.get("references", []):
-        nid = ref.get("paperId", "")
-        if nid and nid in all_pmap:
-            w = math.log(ref.get("citationCount", 1) + 1) / 4
-            add_edge(center_id, nid, max(0.4, w))
-
-    for cit in refs_data.get("citations", []):
-        nid = cit.get("paperId", "")
-        if nid and nid in all_pmap:
-            w = math.log(cit.get("citationCount", 1) + 1) / 4
-            add_edge(center_id, nid, max(0.3, w))
-
-    # Cross-edges antar non-center nodes (cap 20 per node agar tidak meledak)
-    for pid in list(pmap.keys()):
+    # ── Ring assignment ──
+    ring1, ring2, ring3_extra = [], [], []
+    for pid, p in papers_map.items():
         if pid == center_id:
             continue
-        rc = refs_cache.get(pid, {})
-        for ref in rc.get("references", [])[:20]:
-            nid = ref.get("paperId", "")
-            if nid and nid in all_pmap and nid != pid:
-                w = math.log(ref.get("citationCount", 1) + 1) / 6
-                add_edge(pid, nid, max(0.2, w))
+        in_refs  = pid in ref_ids
+        in_cites = pid in cite_ids
+        if in_refs:
+            ring1.append(pid)
+        elif in_cites:
+            ring2.append(pid)
+        else:
+            # Fallback temporal: lebih lama = leluhur (ring1), lebih baru = keturunan (ring2)
+            if p["year"] < center["year"]:
+                ring1.append(pid)
+            elif p["year"] > center["year"]:
+                ring2.append(pid)
+            else:
+                # Tahun sama → masuk ring dengan sitasi lebih tinggi
+                if p["citations"] >= center["citations"]:
+                    ring1.append(pid)
+                else:
+                    ring2.append(pid)
+
+    # ── Ring 3: tetangga dari API (bukan di papers_map) ──
+    seen_pids = set(papers_map.keys()) | {center_id}
+    api_nodes = refs_data.get("references", []) + refs_data.get("citations", [])
+    added_r3  = set()
+    for node in sorted(api_nodes,
+                       key=lambda x: x.get("citationCount", 0),
+                       reverse=True)[:8]:
+        nid  = node.get("paperId", "")
+        ntit = (node.get("title", "") or "").strip()
+        if nid and nid not in seen_pids and nid not in added_r3 and ntit:
+            nc = node.get("citationCount", 0) or 0
+            if nc > _R3_MIN_CITATIONS:  # FIXED: use named constant
+                ring3_extra.append({
+                    "id":          nid,
+                    "title":       ntit,
+                    "title_short": (ntit[:45] + "…") if len(ntit) > 45 else ntit,
+                    "authors":     "—",
+                    "year":        node.get("year", "?") or "?",
+                    "citations":   nc,
+                    "venue":       "External",
+                    "abstract":    "Paper tetangga dari jaringan sitasi (bukan dari hasil pencarian).",
+                    "link":        f"https://www.semanticscholar.org/paper/{nid}",
+                    "source":      "neighbor",
+                    "is_main":     False,
+                })
+                added_r3.add(nid)
+                if len(added_r3) >= 6:
+                    break
+
+    # ── Build edge list ──
+    edges = []
+    for pid in ring1:
+        w = math.log(papers_map[pid]["citations"] + 1) / 3
+        edges.append({"src": pid,       "dst": center_id, "type": "r1",
+                      "weight": round(max(0.5, w), 3)})
+
+    for pid in ring2:
+        w = math.log(papers_map[pid]["citations"] + 1) / 3
+        edges.append({"src": center_id, "dst": pid,       "type": "r2",
+                      "weight": round(max(0.5, w), 3)})
+
+    for nd in ring3_extra:
+        nid = nd["id"]
+        w   = math.log(nd["citations"] + 1) / 5
+        # Determine direction by year
+        yr  = nd["year"] if isinstance(nd["year"], int) else 0
+        if yr and yr < center["year"]:
+            edges.append({"src": nid,       "dst": center_id, "type": "r3",
+                          "weight": round(max(0.3, w), 3)})
+        else:
+            edges.append({"src": center_id, "dst": nid,       "type": "r3",
+                          "weight": round(max(0.3, w), 3)})
+
+    # ── Config stats ──
+    avg_r1_cite = (
+        sum(papers_map[i]["citations"] for i in ring1) / len(ring1)
+        if ring1 else 0
+    )
 
     return {
-        "nodes":     all_nodes,
-        "edges":     edges,
-        "center_id": center_id,
+        "ring1":       ring1,
+        "ring2":       ring2,
+        "ring3_extra": ring3_extra,
+        "edges":       edges,
+        "stats": {
+            "ancestors":         len(ring1),
+            "descendants":       len(ring2),
+            "extra_neighbors":   len(ring3_extra),
+            "avg_r1_citations":  round(avg_r1_cite),
+            "center_citations":  center["citations"],
+            "center_year":       center["year"],
+        }
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)  # FIXED: cache — prevents double computation
+def build_influence_data(papers: list[dict]) -> dict:
+    """
+    Bangun SELURUH data influence map: satu konfigurasi per paper sebagai pusat.
+    Semua konfigurasi di-precompute dan di-embed ke HTML sebagai JSON —
+    sehingga re-center di browser adalah instan (zero latency).
+
+    Input:
+        papers — list of dict dari search_papers() / data_layer.py
+
+    Output:
+    {
+      "papers":         [NormalizedPaperDict, ...],
+      "configs":        {paper_id: ConfigDict, ...},
+      "default_center": paper_id,   # paper dengan sitasi terbanyak
+      "year_range":     [min, max],
+    }
+    """
+    if not papers:
+        return {"papers": [], "configs": {}, "default_center": "", "year_range": [2015, 2025]}
+
+    # ── Normalisasi semua paper ──
+    norm_papers = [_normalize_paper(p, i) for i, p in enumerate(papers)]
+
+    # FIXED: detect & resolve duplicate IDs — dict-comprehension silently overwrites duplicates
+    papers_map: dict = {}
+    for p in norm_papers:
+        pid = p["id"]
+        if pid in papers_map:
+            import sys
+            print(f"[graph_influence] WARNING: duplicate paper ID '{pid}' — appending suffix",
+                  file=sys.stderr)
+            p = dict(p)
+            p["id"] = f"{pid}_dup{sum(1 for k in papers_map if k.startswith(pid))}"
+        papers_map[p["id"]] = p
+
+    # ── Fetch refs untuk semua paper (cached) ──
+    refs_cache = {}
+    for p in norm_papers:
+        refs_cache[p["id"]] = fetch_influence_refs(p["id"])
+
+    # ── Precompute konfigurasi tiap center ──
+    configs = {}
+    for pid in papers_map:
+        configs[pid] = _build_one_config(pid, papers_map, refs_cache)
+
+    # ── Default center = paper paling banyak dikutip ──
+    default_center = max(papers_map, key=lambda k: papers_map[k]["citations"])
+
+    years     = [p["year"] for p in norm_papers]
+    year_min  = min(years, default=2015)
+    year_max  = max(years, default=2025)
+
+    return {
+        "papers":         norm_papers,
+        "configs":        configs,
+        "default_center": default_center,
+        "year_range":     [year_min, year_max],
     }
 
 
 # ─────────────────────────────────────────────────────────────────
-# STATS
+# 3. STATISTIK
 # ─────────────────────────────────────────────────────────────────
 
 def influence_stats(papers: list[dict], center_id: str = None) -> dict:
-    """Statistik singkat untuk metric cards Streamlit."""
+    """
+    Hitung statistik influence map untuk ditampilkan sebagai metric cards
+    di Streamlit — di atas atau di bawah komponen HTML.
+
+    Returns dict:
+        total_papers, total_nodes (incl. neighbors), center_title,
+        center_citations, ancestor_count, descendant_count,
+        neighbor_count, influence_reach (total nodes reachable from center)
+    """
     if not papers:
         return {}
-    data  = build_influence_data(papers)
-    nodes = {n["id"]: n for n in data["nodes"]}
-    cid   = center_id or data["center_id"]
-    cn    = nodes.get(cid, {})
-    rings: dict = {}
-    for n in data["nodes"]:
-        rings[n["ring"]] = rings.get(n["ring"], 0) + 1
+
+    data = build_influence_data(papers)
+    if not data["papers"]:
+        return {}
+
+    cid  = center_id or data["default_center"]
+    pmap = {p["id"]: p for p in data["papers"]}
+    cfg  = data["configs"].get(cid, {})
+
+    center = pmap.get(cid, {})
+    r3_ex  = cfg.get("ring3_extra", [])
+    total  = len(data["papers"]) + len(r3_ex)
+
     return {
-        "total_nodes":      len(data["nodes"]),
-        "total_edges":      len(data["edges"]),
-        "center_title":     cn.get("short", "—"),
-        "center_citations": cn.get("citations", 0),
-        "ring1_count":      rings.get("r1", 0),
-        "ring2_count":      rings.get("r2", 0),
-        "ring3_count":      rings.get("r3", 0),
+        "total_papers":      len(data["papers"]),
+        "total_nodes":       total,
+        "center_title":      center.get("title_short", "-"),
+        "center_citations":  center.get("citations",   0),
+        "ancestor_count":    cfg.get("stats", {}).get("ancestors",    0),
+        "descendant_count":  cfg.get("stats", {}).get("descendants",  0),
+        "neighbor_count":    cfg.get("stats", {}).get("extra_neighbors", 0),
+        "influence_reach":   (
+            cfg.get("stats", {}).get("ancestors",  0) +
+            cfg.get("stats", {}).get("descendants", 0) +
+            cfg.get("stats", {}).get("extra_neighbors", 0)
+        ),
     }
 
 
 # ─────────────────────────────────────────────────────────────────
-# RENDER HTML
+# 4. RENDER HTML
 # ─────────────────────────────────────────────────────────────────
 
-def render_influence(papers: list[dict], height: int = 680) -> str:
+def render_influence(papers: list[dict], height: int = 700) -> str:
     """
-    Render Influence Map sebagai HTML interaktif.
-    Gunakan D3.js force-directed graph — optimal untuk 50-100 node.
+    Render Influence Map sebagai HTML interaktif penuh.
 
-    Cara pakai di Streamlit:
+    Arsitektur visual:
+      · SVG layer    — struktur statis: orbit rings, edges, node shapes, labels
+      · Canvas layer — animasi: particle system mengalir sepanjang edges
+      · CSS layer    — background nebula, glow effects, panel UI
+
+    Gunakan di Streamlit:
         import streamlit.components.v1 as components
-        components.html(render_influence(papers), height=700, scrolling=False)
+        components.html(render_influence(papers), height=720, scrolling=False)
 
     Returns:
-        str — HTML lengkap siap embed
+        str — HTML lengkap (~40KB) siap embed
     """
     data      = build_influence_data(papers)
-    _raw      = json.dumps(data, ensure_ascii=False).replace("</", r"<\/")
-    data_json = json.dumps(_raw)
+    # FIXED: two-layer XSS defense
+    #   1) replace </ with \<\/ so </script> can never prematurely close the tag
+    #   2) double-encode as JS string literal → browser parses as data, not code
+    _raw_json  = json.dumps(data, ensure_ascii=False).replace('\x3c/', r'\<\/')
+    data_json  = json.dumps(_raw_json)          # outer quotes → safe JS string
 
     return f"""<!DOCTYPE html>
 <html lang="id">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Influence Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syncopate:wght@400;700&family=Fira+Code:wght@300;400;500&family=Nunito:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{
-  background:#0d1117;color:#c9d1d9;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+/* ── Reset ── */
+*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
+html,body{{
   width:100%;height:{height}px;overflow:hidden;
+  background:#030a14;color:#c8d8f0;
+  font-family:'Nunito',sans-serif;user-select:none;
 }}
 
-/* ── Layout ── */
-#root{{display:flex;height:{height}px;}}
-#graph-wrap{{flex:1;position:relative;min-width:0;}}
-#panel{{
-  width:260px;flex-shrink:0;
-  background:#161b22;border-left:1px solid #30363d;
-  display:flex;flex-direction:column;overflow:hidden;
+/* ── Design Tokens ── */
+:root{{
+  --bg:          #030a14;
+  --bg2:         #060f22;
+  --panel-bg:    rgba(6,15,35,0.96);
+  --border:      rgba(56,189,248,0.14);
+  --border-hi:   rgba(56,189,248,0.42);
+
+  --center-c:    #fbbf24;
+  --center-g:    rgba(251,191,36,0.55);
+  --r1-c:        #38bdf8;
+  --r1-g:        rgba(56,189,248,0.45);
+  --r2-c:        #34d399;
+  --r2-g:        rgba(52,211,153,0.40);
+  --r3-c:        #94a3b8;
+  --r3-g:        rgba(148,163,184,0.30);
+
+  --text-hi:     #e8f2ff;
+  --text-mid:    #8ab0d0;
+  --text-lo:     #3d5a78;
+
+  --font-disp:   'Syncopate',sans-serif;
+  --font-mono:   'Fira Code',monospace;
+  --font-body:   'Nunito',sans-serif;
 }}
 
-/* ── Top bar ── */
-#topbar{{
-  position:absolute;top:0;left:0;right:0;height:40px;
-  background:rgba(13,17,23,.94);border-bottom:1px solid #21262d;
-  padding:0 12px;display:flex;align-items:center;gap:10px;
-  z-index:10;backdrop-filter:blur(8px);
+/* ── Root container ── */
+#iw{{
+  width:100%;height:{height}px;
+  position:relative;overflow:hidden;
+  background:radial-gradient(ellipse 80% 70% at 50% 50%,
+    rgba(15,30,70,0.6) 0%,
+    rgba(3,10,20,1) 65%);
 }}
-#topbar h1{{
-  font-size:11px;font-weight:700;color:#58a6ff;
-  letter-spacing:.5px;white-space:nowrap;flex-shrink:0;
-}}
-#search{{
-  flex:1;max-width:200px;
-  background:#0d1117;border:1px solid #30363d;border-radius:6px;
-  padding:4px 10px;color:#c9d1d9;font-size:11px;outline:none;
-}}
-#search:focus{{border-color:#58a6ff;box-shadow:0 0 0 2px rgba(88,166,255,.15);}}
-#search::placeholder{{color:#484f58;}}
-.tag{{
-  font-size:9px;padding:2px 7px;border-radius:10px;font-weight:600;
-  white-space:nowrap;flex-shrink:0;
-}}
-.tag-center{{background:rgba(255,215,0,.12);color:#ffd700;}}
-.tag-r1{{background:rgba(88,166,255,.10);color:#58a6ff;}}
-.tag-r2{{background:rgba(63,185,80,.10);color:#3fb950;}}
-.tag-r3{{background:rgba(110,118,129,.12);color:#8b949e;}}
 
-/* ── Zoom controls ── */
-#zoom-ctrl{{
-  position:absolute;bottom:14px;left:14px;
-  display:flex;gap:4px;z-index:10;
+/* Nebula glow behind center (dynamic via JS) */
+#nebula{{
+  position:absolute;pointer-events:none;border-radius:50%;
+  transition:left .6s ease,top .6s ease,opacity .4s;
+  z-index:0;opacity:.55;
 }}
-.z-btn{{
-  width:28px;height:28px;
-  background:#161b22;border:1px solid #30363d;
-  border-radius:6px;color:#8b949e;font-size:15px;line-height:1;
-  cursor:pointer;display:flex;align-items:center;justify-content:center;
-  transition:all .15s;user-select:none;
-}}
-.z-btn:hover{{background:#21262d;color:#c9d1d9;border-color:#58a6ff;}}
 
-/* ── SVG ── */
-svg{{width:100%;height:100%;display:block;}}
-.link{{stroke-opacity:.5;transition:stroke-opacity .18s;}}
-.link.faded{{stroke-opacity:.05;}}
-.link.lit{{stroke-opacity:.9;}}
-.node-circle{{
-  cursor:pointer;stroke-width:1.5px;
-  transition:opacity .18s,filter .18s;
+/* Scanline overlay */
+#iw::after{{
+  content:'';position:absolute;inset:0;pointer-events:none;z-index:1;
+  background:repeating-linear-gradient(
+    0deg,transparent,transparent 2px,rgba(0,15,45,.06) 2px,rgba(0,15,45,.06) 3px
+  );
 }}
-.node-circle.faded{{opacity:.1;}}
-.node-circle.lit{{stroke-width:2.8px;filter:brightness(1.4) drop-shadow(0 0 4px currentColor);}}
-.node-label{{
-  font-size:9px;fill:#6e7681;pointer-events:none;
-  dominant-baseline:central;
+
+/* ── Control bar ── */
+#ctrl{{
+  position:absolute;top:0;left:0;right:0;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:8px 14px;z-index:30;
+  background:linear-gradient(180deg,rgba(3,10,20,.98),transparent);
 }}
-.node-label.vis{{fill:#c9d1d9;}}
+.c-lbl{{
+  font-family:var(--font-disp);font-size:9.5px;letter-spacing:3px;
+  color:var(--text-lo);text-transform:uppercase;white-space:nowrap;
+}}
+.c-sep{{width:1px;height:20px;background:var(--border);flex-shrink:0;}}
+.c-btn{{
+  display:flex;align-items:center;gap:5px;cursor:pointer;
+  padding:4px 10px;border-radius:4px;
+  border:1px solid var(--border);background:transparent;
+  font-family:var(--font-mono);font-size:11px;letter-spacing:.8px;
+  color:var(--text-mid);transition:all .18s;
+}}
+.c-btn:hover{{border-color:var(--border-hi);color:var(--text-hi);}}
+.c-btn.on-amber{{border-color:var(--center-c);color:var(--center-c);background:rgba(251,191,36,.07);box-shadow:0 0 7px rgba(251,191,36,.18);}}
+.c-btn.on-sky{{border-color:var(--r1-c);color:var(--r1-c);background:rgba(56,189,248,.07);}}
+.c-btn.on-green{{border-color:var(--r2-c);color:var(--r2-c);background:rgba(52,211,153,.07);}}
+.c-dot{{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0;}}
+/* Paper selector */
+#sel-wrap{{margin-left:auto;display:flex;align-items:center;gap:7px;}}
+.c-lbl-inline{{font-family:var(--font-mono);font-size:10.5px;color:var(--text-lo);white-space:nowrap;}}
+#paper-sel{{
+  background:rgba(6,15,35,.9);border:1px solid var(--border);
+  border-radius:5px;color:var(--r1-c);padding:4px 26px 4px 10px;
+  font-family:var(--font-mono);font-size:11px;cursor:pointer;
+  appearance:none;outline:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2338bdf8'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 8px center;
+  max-width:200px;
+}}
+#paper-sel option{{background:#060f22;color:#c8d8f0;}}
+
+/* ── SVG + Canvas ── */
+#sc{{position:absolute;inset:0;z-index:2;}}
+#svg{{position:absolute;inset:0;width:100%;height:100%;}}
+#cv {{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}}
+
+/* SVG classes */
+.orbit-ring{{
+  fill:none;stroke-dasharray:6 12;
+  animation:orbit-spin var(--spd,24s) linear infinite;
+  transform-origin:var(--ox,50%) var(--oy,50%);
+}}
+@keyframes orbit-spin{{to{{stroke-dashoffset:-180}}}}
+
+.edge-line{{fill:none;transition:opacity .3s;}}
+.edge-line.dim{{opacity:.04;}}
+
+.inode{{cursor:pointer;transition:opacity .3s;}}
+.inode:hover .n-glow{{opacity:.7;}}
+.inode.dim{{opacity:.1;}}
+
+.n-glow{{transition:opacity .3s;}}
+.n-ring-anim{{animation:pulse-ring 2.2s ease-out infinite;}}
+@keyframes pulse-ring{{
+  0%{{transform:scale(1);opacity:.7;}}
+  60%{{transform:scale(1.5);opacity:0;}}
+  100%{{transform:scale(1.5);opacity:0;}}
+}}
+
+.n-lbl{{
+  font-family:var(--font-body);font-size:12px;fill:#d0e4f8;
+  pointer-events:none;text-anchor:middle;dominant-baseline:hanging;
+}}
+.n-cite{{
+  font-family:var(--font-mono);font-size:10px;
+  pointer-events:none;text-anchor:middle;
+}}
+.n-yr{{
+  font-family:var(--font-mono);font-size:11px;font-weight:500;
+  text-anchor:middle;dominant-baseline:central;pointer-events:none;
+}}
+.ring-label{{
+  font-family:var(--font-disp);font-size:9px;letter-spacing:2px;
+  text-transform:uppercase;text-anchor:middle;dominant-baseline:central;
+  pointer-events:none;
+}}
 
 /* ── Tooltip ── */
-#tooltip{{
-  position:absolute;display:none;pointer-events:none;
-  background:#1c2128;border:1px solid #30363d;border-radius:8px;
-  padding:9px 12px;max-width:220px;z-index:50;
-  box-shadow:0 8px 24px rgba(0,0,0,.55);
-  font-size:10.5px;line-height:1.45;
+#tt{{
+  position:absolute;display:none;pointer-events:none;z-index:100;
+  background:rgba(3,10,20,.97);border:1px solid rgba(56,189,248,.25);
+  border-radius:9px;padding:13px 15px;max-width:280px;min-width:200px;
+  box-shadow:0 12px 40px rgba(0,0,0,.8),0 0 20px rgba(56,189,248,.06);
+  backdrop-filter:blur(16px);font-size:13px;line-height:1.5;
 }}
-#tooltip .tt-title{{font-weight:600;color:#e6edf3;margin-bottom:4px;}}
-#tooltip .tt-meta{{color:#8b949e;font-size:9.5px;}}
+.tt-title{font-family:var(--font-body);font-size:13px;font-weight:700;color:var(--text-hi);margin-bottom:4px;line-height:1.35;}}
+.tt-meta{font-family:var(--font-mono);font-size:10px;color:var(--text-mid);letter-spacing:.3px;margin-bottom:2px;}}
+.tt-ring{{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:2px 8px;border-radius:3px;
+  font-family:var(--font-mono);font-size:9.5px;letter-spacing:1px;
+  text-transform:uppercase;font-weight:500;margin:5px 0 6px;
+  border:1px solid currentColor;background:rgba(0,0,0,.2);
+}}
+.tt-abs{font-family:var(--font-body);font-size:11px;color:var(--text-mid);line-height:1.5;border-top:1px solid var(--border);padding-top:5px;margin-top:4px;}}
+.tt-hint{font-family:var(--font-mono);font-size:9.5px;color:var(--center-c);margin-top:6px;}}
 
-/* ── Side panel ── */
-#stats-row{{
-  display:flex;border-bottom:1px solid #21262d;flex-shrink:0;
+/* ── Detail Panel ── */
+#dp{{
+  position:absolute;right:14px;top:52px;width:240px;
+  background:var(--panel-bg);border:1px solid var(--border);
+  border-radius:10px;padding:14px;z-index:50;
+  display:none;animation:dp-in .22s ease;
+  box-shadow:0 12px 40px rgba(0,0,0,.6);backdrop-filter:blur(16px);
 }}
-.stat-box{{
-  flex:1;padding:8px;border-right:1px solid #21262d;text-align:center;
+@keyframes dp-in{{from{{opacity:0;transform:translateX(16px)}}to{{opacity:1;transform:none}}}}
+#dp.vis{{display:block;}}
+.dp-x{{
+  position:absolute;top:10px;right:12px;cursor:pointer;
+  color:var(--text-lo);font-size:15px;line-height:1;transition:color .15s;
 }}
-.stat-box:last-child{{border-right:none;}}
-.stat-num{{font-size:15px;font-weight:700;color:#e6edf3;}}
-.stat-lbl{{font-size:8px;color:#484f58;margin-top:1px;text-transform:uppercase;letter-spacing:.5px;}}
+.dp-x:hover{{color:var(--text-hi);}}
+.dp-title{font-family:var(--font-body);font-size:13px;font-weight:700;color:var(--text-hi);line-height:1.4;margin-bottom:10px;padding-right:16px;}}
+.dp-row{{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);}}
+.dp-k{font-family:var(--font-mono);font-size:9.5px;color:var(--text-lo);letter-spacing:.7px;text-transform:uppercase;}}
+.dp-v{font-family:var(--font-mono);font-size:11.5px;color:var(--r1-c);font-weight:500;}}
+.dp-abs{font-family:var(--font-body);font-size:11px;color:var(--text-mid);line-height:1.5;margin:8px 0;}}
+.dp-btn{{
+  display:block;width:100%;padding:7px;text-align:center;
+  background:rgba(56,189,248,.07);border:1px solid rgba(56,189,248,.22);
+  border-radius:5px;color:var(--r1-c);cursor:pointer;
+  font-family:var(--font-mono);font-size:10px;letter-spacing:1.5px;
+  text-transform:uppercase;text-decoration:none;transition:all .18s;margin-bottom:6px;
+}}
+.dp-btn:hover{{background:rgba(56,189,248,.18);}}
+.dp-recenter{{
+  display:block;width:100%;padding:7px;text-align:center;
+  background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.22);
+  border-radius:5px;color:var(--center-c);cursor:pointer;
+  font-family:var(--font-mono);font-size:10px;letter-spacing:1.5px;
+  text-transform:uppercase;transition:all .18s;
+}}
+.dp-recenter:hover{{background:rgba(251,191,36,.18);}}
 
-#panel-header{{
-  padding:12px 14px 10px;border-bottom:1px solid #21262d;flex-shrink:0;
+/* ── Stats Panel (right) ── */
+#sp{{
+  position:absolute;right:14px;bottom:40px;width:170px;
+  background:var(--panel-bg);border:1px solid var(--border);
+  border-radius:9px;padding:12px;z-index:20;
 }}
-.ph-label{{font-size:8.5px;letter-spacing:.8px;color:#484f58;text-transform:uppercase;margin-bottom:5px;}}
-#panel-title{{font-size:11px;font-weight:600;color:#e6edf3;line-height:1.4;}}
+;;_PLACEHOLDER
+  font-family:var(--font-disp);font-size:9px;letter-spacing:3px;
+  color:var(--text-lo);text-transform:uppercase;margin-bottom:8px;
+}}
+.sp-row{{display:flex;justify-content:space-between;align-items:center;padding:3px 0;}}
+.sp-k{{font-family:var(--font-mono);font-size:9.5px;color:var(--text-lo);}}
+.sp-v{{font-family:var(--font-mono);font-size:12px;font-weight:500;}}
+.sp-bar{{
+  height:3px;background:rgba(56,189,248,.1);border-radius:2px;
+  margin:5px 0;overflow:hidden;
+}}
+.sp-fill{{height:100%;border-radius:2px;transition:width .6s ease;}}
 
-#panel-body{{padding:10px 14px 14px;overflow-y:auto;flex:1;}}
-.info-row{{
-  display:flex;justify-content:space-between;align-items:baseline;
-  padding:5px 0;border-bottom:1px solid #21262d;font-size:10px;
+/* ── Compare Mode ── */
+#compare-wrap{{
+  position:absolute;inset:36px 0 0 0;display:none;z-index:25;
 }}
-.info-label{{color:#484f58;flex-shrink:0;}}
-.info-val{{color:#c9d1d9;font-weight:500;text-align:right;max-width:150px;
-  word-break:break-word;}}
-#panel-abstract{{
-  font-size:9.5px;color:#8b949e;line-height:1.6;
-  margin-top:10px;padding-top:10px;border-top:1px solid #21262d;
+#compare-wrap.vis{{display:flex;}}
+.cmp-half{{flex:1;position:relative;border:1px solid var(--border);margin:4px;border-radius:8px;overflow:hidden;}}
+.cmp-sel-wrap{{position:absolute;top:8px;left:0;right:0;display:flex;justify-content:center;z-index:5;}}
+.cmp-sel{{
+  background:rgba(6,15,35,.95);border:1px solid var(--border);
+  border-radius:4px;color:var(--r1-c);padding:4px 22px 4px 8px;
+  font-family:var(--font-mono);font-size:10.5px;cursor:pointer;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%2338bdf8'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 6px center;max-width:180px;
 }}
-#panel-open{{
-  display:block;text-align:center;margin:12px 0 6px;
-  background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.2);
-  border-radius:6px;padding:7px;color:#58a6ff;font-size:10px;
-  text-decoration:none;transition:background .15s;font-weight:600;
-}}
-#panel-open:hover{{background:rgba(88,166,255,.18);}}
-#panel-recenter{{
-  display:block;text-align:center;
-  background:rgba(255,215,0,.06);border:1px solid rgba(255,215,0,.18);
-  border-radius:6px;padding:7px;color:#ffd700;font-size:10px;
-  cursor:pointer;transition:background .15s;font-weight:600;
-}}
-#panel-recenter:hover{{background:rgba(255,215,0,.14);}}
-.empty-hint{{
-  color:#484f58;font-size:10px;text-align:center;
-  padding:30px 0;
+.cmp-sel option{{background:#060f22;}}
+.cmp-svg{{width:100%;height:100%;}}
+.shared-badge{{
+  position:absolute;bottom:8px;left:0;right:0;text-align:center;
+  font-family:var(--font-mono);font-size:9.5px;color:var(--r2-c);
+  letter-spacing:.5px;pointer-events:none;
 }}
 
 /* ── Legend ── */
-#legend{{
-  padding:8px 14px;border-top:1px solid #21262d;
-  display:flex;flex-wrap:wrap;gap:8px;flex-shrink:0;
+#leg{{
+  position:absolute;bottom:14px;left:14px;
+  display:flex;align-items:center;gap:14px;z-index:20;
 }}
-.leg{{display:flex;align-items:center;gap:5px;font-size:9px;color:#484f58;}}
-.leg-dot{{width:8px;height:8px;border-radius:50%;flex-shrink:0;}}
+.leg-i{{display:flex;align-items:center;gap:5px;font-family:var(--font-mono);font-size:10px;color:var(--text-lo);}}
+.leg-d{{width:9px;height:9px;border-radius:50%;flex-shrink:0;}}
 </style>
 </head>
 <body>
-<div id="root">
+<div id="iw">
+  <!-- Nebula background glow -->
+  <div id="nebula"></div>
 
-  <!-- Graph -->
-  <div id="graph-wrap">
-    <div id="topbar">
-      <h1>◈ INFLUENCE MAP</h1>
-      <input id="search" type="text" placeholder="Cari judul…" oninput="onSearch(this.value)">
-      <span class="tag tag-center">⊙ Pusat</span>
-      <span class="tag tag-r1" id="tag-r1">— Leluhur</span>
-      <span class="tag tag-r2" id="tag-r2">— Penerus</span>
-      <span class="tag tag-r3" id="tag-r3">— Tetangga</span>
+  <!-- Control bar -->
+  <div id="ctrl">
+    <span class="c-lbl">Influence Map ◈</span>
+    <div class="c-sep"></div>
+    <button class="c-btn on-amber" id="btn-part" onclick="toggleParticles()"><span class="c-dot"></span>PARTICLES</button>
+    <button class="c-btn on-sky"   id="btn-orb"  onclick="toggleOrbits()">  <span class="c-dot"></span>ORBITS</button>
+    <button class="c-btn"          id="btn-heat" onclick="toggleHeatmap()"> <span class="c-dot"></span>HEATMAP</button>
+    <button class="c-btn"          id="btn-cmp"  onclick="toggleCompare()"> <span class="c-dot"></span>COMPARE</button>
+    <div class="c-sep"></div>
+    <div id="sel-wrap">
+      <span class="c-lbl-inline">PUSAT :</span>
+      <select id="paper-sel" onchange="onSelectCenter(this.value)"></select>
     </div>
+  </div>
 
-    <svg id="svg">
-      <g id="g-zoom">
-        <g id="g-links"></g>
-        <g id="g-nodes"></g>
-      </g>
+  <!-- Main SVG + Canvas -->
+  <div id="sc">
+    <svg id="svg" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <radialGradient id="grad-center" cx="50%" cy="50%" r="50%">
+          <stop offset="0%"   stop-color="#fde68a" stop-opacity="1"/>
+          <stop offset="60%"  stop-color="#f59e0b" stop-opacity=".8"/>
+          <stop offset="100%" stop-color="#d97706" stop-opacity="0"/>
+        </radialGradient>
+        <radialGradient id="grad-r1" cx="50%" cy="50%" r="50%">
+          <stop offset="0%"  stop-color="#7dd3fc" stop-opacity=".9"/>
+          <stop offset="100%" stop-color="#0284c7" stop-opacity="0"/>
+        </radialGradient>
+        <radialGradient id="grad-r2" cx="50%" cy="50%" r="50%">
+          <stop offset="0%"  stop-color="#6ee7b7" stop-opacity=".9"/>
+          <stop offset="100%" stop-color="#059669" stop-opacity="0"/>
+        </radialGradient>
+        <radialGradient id="grad-r3" cx="50%" cy="50%" r="50%">
+          <stop offset="0%"  stop-color="#cbd5e1" stop-opacity=".7"/>
+          <stop offset="100%" stop-color="#64748b" stop-opacity="0"/>
+        </radialGradient>
+        <filter id="f-center" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur stdDeviation="7" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="f-node" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur stdDeviation="4" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="f-glow-hi" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="6"/>
+        </filter>
+        <marker id="arr-r1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+          <path d="M0,0 L0,8 L8,4 z" fill="rgba(56,189,248,0.55)"/>
+        </marker>
+        <marker id="arr-r2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+          <path d="M0,0 L0,8 L8,4 z" fill="rgba(52,211,153,0.55)"/>
+        </marker>
+        <marker id="arr-r3" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto">
+          <path d="M0,0 L0,7 L7,3.5 z" fill="rgba(148,163,184,0.35)"/>
+        </marker>
+      </defs>
+      <rect width="100%" height="100%" fill="transparent"/>
+      <g id="g-orbits"></g>
+      <g id="g-edges"></g>
+      <g id="g-nodes"></g>
     </svg>
+    <!-- Particle canvas overlay -->
+    <canvas id="cv"></canvas>
+  </div>
 
-    <div id="tooltip">
-      <div class="tt-title" id="tt-title"></div>
-      <div class="tt-meta"  id="tt-info"></div>
+  <!-- Tooltip -->
+  <div id="tt"></div>
+
+  <!-- Detail Panel -->
+  <div id="dp">
+    <span class="dp-x" onclick="closePanel()">✕</span>
+    <div class="dp-title" id="dp-title">—</div>
+    <div id="dp-rows"></div>
+    <div class="dp-abs" id="dp-abs">—</div>
+    <a  class="dp-btn"      id="dp-link"     href="#" target="_blank">↗ BUKA PAPER</a>
+    <div class="dp-recenter" id="dp-recenter" onclick="reCenterFromPanel()">⊙ JADIKAN PUSAT</div>
+  </div>
+
+  <!-- Stats Panel -->
+  <div id="sp">
+    <div class="sp-hdr">Network Stats</div>
+    <div id="sp-content"></div>
+  </div>
+
+  <!-- Compare Mode overlay -->
+  <div id="compare-wrap">
+    <div class="cmp-half" id="cmp-left">
+      <div class="cmp-sel-wrap">
+        <select class="cmp-sel" id="cmp-sel-a" onchange="renderCompare()"></select>
+      </div>
+      <svg class="cmp-svg" id="cmp-svg-a" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="shared-badge" id="cmp-badge-a"></div>
     </div>
-
-    <div id="zoom-ctrl">
-      <button class="z-btn" onclick="zoomIn()"   title="Zoom In">+</button>
-      <button class="z-btn" onclick="zoomReset()" title="Reset">⊙</button>
-      <button class="z-btn" onclick="zoomOut()"  title="Zoom Out">−</button>
+    <div class="cmp-half" id="cmp-right">
+      <div class="cmp-sel-wrap">
+        <select class="cmp-sel" id="cmp-sel-b" onchange="renderCompare()"></select>
+      </div>
+      <svg class="cmp-svg" id="cmp-svg-b" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="shared-badge" id="cmp-badge-b"></div>
     </div>
   </div>
 
-  <!-- Panel -->
-  <div id="panel">
-    <div id="stats-row">
-      <div class="stat-box">
-        <div class="stat-num" id="s-nodes">—</div>
-        <div class="stat-lbl">Nodes</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-num" id="s-edges">—</div>
-        <div class="stat-lbl">Edges</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-num" id="s-cites">—</div>
-        <div class="stat-lbl">Sitasi</div>
-      </div>
-    </div>
-
-    <div id="panel-header">
-      <div class="ph-label">Paper terpilih</div>
-      <div id="panel-title" style="color:#484f58;font-size:10px">Klik node pada graf</div>
-    </div>
-
-    <div id="panel-body">
-      <div id="panel-empty" class="empty-hint">◎<br>Klik node untuk<br>melihat detail</div>
-      <div id="panel-detail" style="display:none">
-        <div id="panel-rows"></div>
-        <div id="panel-abstract"></div>
-        <a id="panel-open" href="#" target="_blank" style="display:none">↗ Buka di Semantic Scholar</a>
-        <div id="panel-recenter" onclick="recenterNode()">⊙ Jadikan Pusat</div>
-      </div>
-    </div>
-
-    <div id="legend">
-      <div class="leg"><div class="leg-dot" style="background:#ffd700"></div>Pusat</div>
-      <div class="leg"><div class="leg-dot" style="background:#58a6ff"></div>Leluhur (R1)</div>
-      <div class="leg"><div class="leg-dot" style="background:#3fb950"></div>Penerus (R2)</div>
-      <div class="leg"><div class="leg-dot" style="background:#6e7681"></div>Tetangga (R3)</div>
-    </div>
+  <!-- Legend -->
+  <div id="leg">
+    <span class="leg-i"><span class="leg-d" style="background:#fbbf24;box-shadow:0 0 6px #fbbf24"></span>PUSAT</span>
+    <span class="leg-i"><span class="leg-d" style="background:#38bdf8"></span>LELUHUR (ring 1)</span>
+    <span class="leg-i"><span class="leg-d" style="background:#34d399"></span>PENERUS (ring 2)</span>
+    <span class="leg-i"><span class="leg-d" style="background:#94a3b8"></span>TETANGGA (ring 3)</span>
   </div>
+</div><!-- #iw -->
 
-</div>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
 <script>
-/* ── DATA ── */
-const RAW = JSON.parse({data_json});
+/* ════════════════════════════════════════
+   DATA
+════════════════════════════════════════ */
+const D = JSON.parse({data_json}); /* FIXED: safe JSON.parse, no raw injection */
 
-/* ── ESCAPE ── */
-const esc = s => String(s==null?'':s)
-  .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-
-/* ── COLORS ── */
-const CLR   = {{center:'#ffd700',r1:'#58a6ff',r2:'#3fb950',r3:'#6e7681'}};
-const RNAME = {{center:'PUSAT',r1:'LELUHUR',r2:'PENERUS',r3:'TETANGGA'}};
-
-/* ── STATE ── */
-let centerNodeId = RAW.center_id;
-let selectedId   = null;
-let G            = null;   // {{nodes, edges, nmap, link, nodeG}}
-
-/* ── HELPERS ── */
-const svgEl = document.getElementById('svg');
-const W = () => svgEl.clientWidth  || 800;
-const H = () => svgEl.clientHeight || 600;
-const nsize = c => Math.max(5, Math.min(22, 5 + Math.sqrt(c||0)*.55));
-
-/* ── ZOOM ── */
-const svg   = d3.select('#svg');
-const gZoom = d3.select('#g-zoom');
-const zoom  = d3.zoom()
-  .scaleExtent([0.15, 5])
-  .on('zoom', ev => gZoom.attr('transform', ev.transform));
-svg.call(zoom);
-
-function zoomIn()    {{ svg.transition().duration(220).call(zoom.scaleBy, 1.35); }}
-function zoomOut()   {{ svg.transition().duration(220).call(zoom.scaleBy, 0.74); }}
-function zoomReset() {{
-  svg.transition().duration(380)
-    .call(zoom.transform, d3.zoomIdentity.translate(W()/2, H()/2).scale(0.82));
+/* ════════════════════════════════════════
+   SAFETY — HTML escape for DOM injection
+════════════════════════════════════════ */
+function safeText(s) {{
+  /* FIXED: prevent DOM XSS — escape HTML entities before inserting into innerHTML */
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }}
 
-/* ── BUILD GRAPH ── */
-function buildGraph(data) {{
-  const nodes = data.nodes.map(n => ({{...n}}));
-  const nmap  = Object.fromEntries(nodes.map(n => [n.id, n]));
+/* ════════════════════════════════════════
+   STATE
+════════════════════════════════════════ */
+const S = {{
+  center:      D.default_center,
+  showPart:    true,
+  showOrbits:  true,
+  heatmap:     false,
+  compare:     false,
+  focusNode:   null,
+  transitioning: false,
+  compareA:    D.default_center,
+  compareB:    D.papers[1] ? D.papers[1].id : D.default_center,
+}};
 
-  const edges = data.edges
-    .filter(e => nmap[e.source] && nmap[e.target])
-    .map(e => ({{...e}}));
+/* ════════════════════════════════════════
+   CONSTANTS
+════════════════════════════════════════ */
+const RING_CLR = {{
+  center: '#fbbf24',
+  r1:     '#38bdf8',
+  r2:     '#34d399',
+  r3:     '#94a3b8',
+}};
+const RING_NAMES = {{center:'PUSAT', r1:'LELUHUR', r2:'PENERUS', r3:'TETANGGA'}};
+const NODE_BASE  = 16;
+const NODE_MAX   = 48;
 
-  // Degree per node
-  nodes.forEach(n => n.degree = 0);
-  edges.forEach(e => {{
-    if (nmap[e.source]) nmap[e.source].degree = (nmap[e.source].degree||0) + 1;
-    if (nmap[e.target]) nmap[e.target].degree = (nmap[e.target].degree||0) + 1;
-  }});
+/* ════════════════════════════════════════
+   HELPERS
+════════════════════════════════════════ */
+function W() {{ return document.getElementById('sc').clientWidth  || 800; }}
+function H() {{ return document.getElementById('sc').clientHeight || 600; }}
 
-  if (G && G.sim) G.sim.stop();
+function ns(tag, attrs={{}}) {{
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  Object.entries(attrs).forEach(([k,v]) => el.setAttribute(k, v));
+  return el;
+}}
 
-  /* ── Simulation ── */
-  const sim = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(edges)
-      .id(d => d.id)
-      .distance(d => 65 + (1 - Math.min(d.weight||.5, 1)) * 85)
-      .strength(.45))
-    .force('charge', d3.forceManyBody()
-      .strength(d => -130 - (d.degree||0) * 10))
-    .force('center', d3.forceCenter(W()/2, H()/2).strength(.05))
-    .force('collide', d3.forceCollide().radius(d => nsize(d.citations) + 7))
-    .alphaDecay(.022)
-    .velocityDecay(.38);
+function nodeSize(citations) {{
+  if (!citations) return NODE_BASE;
+  return Math.max(NODE_BASE, Math.min(NODE_MAX, Math.log(citations+1)*5.5));
+}}
 
-  // Pin center briefly
-  const cn = nmap[centerNodeId];
-  if (cn) {{
-    cn.fx = W()/2; cn.fy = H()/2;
-    setTimeout(() => {{ if(cn){{cn.fx=null;cn.fy=null;}} }}, 1800);
+function heatColor(ring) {{
+  if (!S.heatmap) return null;
+  switch(ring) {{
+    case 'center': return '#ffffff';
+    case 'r1':     return '#ef4444';
+    case 'r2':     return '#f97316';
+    case 'r3':     return '#3b82f6';
+    default:       return '#94a3b8';
+  }}
+}}
+
+function ringColor(ring) {{
+  const hc = heatColor(ring);
+  if (hc) return hc;
+  return RING_CLR[ring] || RING_CLR.r3;
+}}
+
+/* ════════════════════════════════════════
+   LAYOUT — positions for all nodes
+════════════════════════════════════════ */
+function computeLayout(centerId, w, h, forCompare=false) {{
+  const cfg   = D.configs[centerId];
+  if (!cfg) return {{}};
+
+  const cx = w / 2;
+  const cy = h / 2 + (forCompare ? 15 : 0);
+
+  const minDim = Math.min(w, h);
+  const R1 = minDim * 0.22;
+  const R2 = minDim * 0.40;
+  const R3 = minDim * 0.58;
+
+  const pos = {{}};
+  pos[centerId] = {{x:cx, y:cy, ring:'center', r:0}};
+
+  function placeRing(ids, R, ringName) {{
+    const n = ids.length;
+    if (!n) return;
+    const angleOffset = -Math.PI / 2; // start at top
+    ids.forEach((id, i) => {{
+      const a = angleOffset + (2 * Math.PI * i) / n;
+      pos[id] = {{
+        x: cx + R * Math.cos(a),
+        y: cy + R * Math.sin(a),
+        ring: ringName,
+        r: R,
+        angle: a
+      }};
+    }});
   }}
 
-  /* ── Render links ── */
-  const gLinks = d3.select('#g-links');
-  gLinks.selectAll('*').remove();
-  const link = gLinks.selectAll('line')
-    .data(edges).join('line')
-    .attr('class','link')
-    .attr('stroke', e => {{
-      const sr = (nmap[typeof e.source==='object'?e.source.id:e.source]||{{}}).ring;
-      const tr = (nmap[typeof e.target==='object'?e.target.id:e.target]||{{}}).ring;
-      if (sr==='center'||tr==='center') {{
-        if (sr==='r1'||tr==='r1') return '#58a6ff';
-        if (sr==='r2'||tr==='r2') return '#3fb950';
-        return '#6e7681';
-      }}
-      return '#30363d';
-    }})
-    .attr('stroke-width', e => Math.max(.5, e.weight * 2.2));
+  placeRing(cfg.ring1,       R1, 'r1');
+  placeRing(cfg.ring2,       R2, 'r2');
 
-  /* ── Render nodes ── */
-  const gNodes = d3.select('#g-nodes');
-  gNodes.selectAll('*').remove();
-  const nodeG = gNodes.selectAll('g')
-    .data(nodes).join('g')
-    .call(d3.drag()
-      .on('start', (ev,d) => {{ if(!ev.active) sim.alphaTarget(.2).restart(); d.fx=d.x;d.fy=d.y; }})
-      .on('drag',  (ev,d) => {{ d.fx=ev.x;d.fy=ev.y; }})
-      .on('end',   (ev,d) => {{ if(!ev.active) sim.alphaTarget(0); d.fx=null;d.fy=null; }})
-    )
-    .on('mouseenter', showTooltip)
-    .on('mouseleave', () => document.getElementById('tooltip').style.display='none')
-    .on('click', (ev,d) => {{ ev.stopPropagation(); onNodeClick(d, link, nodeG); }});
+  // Ring 3 extra nodes
+  const r3ids = cfg.ring3_extra.map(n => n.id);
+  placeRing(r3ids, R3, 'r3');
 
-  nodeG.append('circle')
-    .attr('class','node-circle')
-    .attr('r', d => nsize(d.citations))
-    .attr('fill', d => CLR[d.ring]||CLR.r3)
-    .attr('stroke', d => d3.color(CLR[d.ring]||CLR.r3).brighter(.7))
-    .attr('fill-opacity', .88);
-
-  // Label: tampil untuk center + node degree tinggi
-  nodeG.append('text')
-    .attr('class', d => 'node-label' + (d.ring==='center'||d.degree>3?' vis':''))
-    .attr('x', d => nsize(d.citations)+3)
-    .attr('y', 0)
-    .text(d => (d.short||'').substring(0,26)+(d.short&&d.short.length>26?'…':''));
-
-  sim.on('tick', () => {{
-    link
-      .attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)
-      .attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
-    nodeG.attr('transform', d => `translate(${{d.x}},${{d.y}})`);
-  }});
-
-  // Stats
-  const rings = {{}};
-  nodes.forEach(n => rings[n.ring]=(rings[n.ring]||0)+1);
-  document.getElementById('s-nodes').textContent = nodes.length;
-  document.getElementById('s-edges').textContent = edges.length;
-  document.getElementById('s-cites').textContent = (nmap[centerNodeId]?.citations||0).toLocaleString();
-  document.getElementById('tag-r1').textContent  = `${{rings.r1||0}} Leluhur`;
-  document.getElementById('tag-r2').textContent  = `${{rings.r2||0}} Penerus`;
-  document.getElementById('tag-r3').textContent  = `${{rings.r3||0}} Tetangga`;
-
-  return {{nodes, edges, nmap, link, nodeG, sim}};
+  return {{pos, R1, R2, R3, cx, cy}};
 }}
 
-/* ── TOOLTIP ── */
-function showTooltip(ev, d) {{
-  const tt = document.getElementById('tooltip');
-  document.getElementById('tt-title').textContent = d.title;
-  document.getElementById('tt-info').textContent  =
-    `${{RNAME[d.ring]||d.ring}}  ·  ${{d.year}}  ·  ↑ ${{(d.citations||0).toLocaleString()}} sitasi`;
-  const wrap = document.getElementById('graph-wrap').getBoundingClientRect();
-  let x = ev.clientX - wrap.left + 14;
-  let y = ev.clientY - wrap.top  - 10;
-  if (x + 230 > wrap.width)  x = ev.clientX - wrap.left - 230;
-  if (y + 75  > wrap.height) y = ev.clientY - wrap.top  - 75;
-  tt.style.cssText = `display:block;left:${{Math.max(4,x)}}px;top:${{Math.max(4,y)}}px`;
+/* ════════════════════════════════════════
+   ALL NODES (main + r3 extras) for current center
+════════════════════════════════════════ */
+function allNodesForCenter(centerId) {{
+  const pmap = {{}};
+  D.papers.forEach(p => {{ pmap[p.id] = p; }});
+  const cfg  = D.configs[centerId] || {{}};
+  const r3ex = cfg.ring3_extra || [];
+  r3ex.forEach(n => {{ pmap[n.id] = n; }});
+  return pmap;
 }}
 
-/* ── NODE CLICK ── */
-function onNodeClick(d, link, nodeG) {{
-  document.getElementById('tooltip').style.display = 'none';
-  selectedId = d.id;
+/* ════════════════════════════════════════
+   DRAW: ORBIT RINGS
+════════════════════════════════════════ */
+function drawOrbits(g, layout) {{
+  g.innerHTML = '';
+  if (!S.showOrbits) return;
+  const {{R1,R2,R3,cx,cy}} = layout;
 
-  // Koneksi langsung
-  const connected = new Set([d.id]);
-  (G?.edges||[]).forEach(e => {{
-    const s = typeof e.source==='object'?e.source.id:e.source;
-    const t = typeof e.target==='object'?e.target.id:e.target;
-    if(s===d.id) connected.add(t);
-    if(t===d.id) connected.add(s);
+  const rings = [
+    {{r:R1, c:'rgba(56,189,248,.18)',  spd:'28s',  lbl:'RING 1 · LELUHUR'}},
+    {{r:R2, c:'rgba(52,211,153,.14)',  spd:'38s',  lbl:'RING 2 · PENERUS'}},
+    {{r:R3, c:'rgba(148,163,184,.10)', spd:'50s',  lbl:'RING 3 · TETANGGA'}},
+  ];
+
+  rings.forEach((ri, i) => {{
+    if (ri.r <= 0) return;
+    const circ = ns('circle', {{
+      cx, cy, r:ri.r,
+      class:'orbit-ring',
+      stroke:ri.c,
+      'stroke-width': i===0?1.4:i===1?1.1:.8,
+      style:`--spd:${{ri.spd}};--ox:${{cx}}px;--oy:${{cy}}px`
+    }});
+    g.appendChild(circ);
+
+    // Ring label at top of each orbit
+    const lx = cx;
+    const ly = cy - ri.r - 8;
+    const lt = ns('text', {{
+      x:lx, y:ly, class:'ring-label',
+      fill:ri.c.replace('.18)','.5)').replace('.14)','.4)').replace('.10)','.3)')
+    }});
+    lt.textContent = ri.lbl;
+    g.appendChild(lt);
+  }});
+}}
+
+/* ════════════════════════════════════════
+   DRAW: EDGES
+════════════════════════════════════════ */
+function drawEdges(g, layout, pmap) {{
+  g.innerHTML = '';
+  const cfg = D.configs[S.center];
+  if (!cfg) return;
+  const {{pos}} = layout;
+
+  cfg.edges.forEach(e => {{
+    const a = pos[e.src], b = pos[e.dst];
+    if (!a || !b) return;
+
+    const t = e.type; // r1, r2, r3
+    const clr = t==='r1' ? 'rgba(56,189,248,0.35)'
+               :t==='r2' ? 'rgba(52,211,153,0.30)'
+               :           'rgba(148,163,184,0.18)';
+    const arr = t==='r1' ? 'url(#arr-r1)'
+               :t==='r2' ? 'url(#arr-r2)'
+               :           'url(#arr-r3)';
+
+    // Curved bezier
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const curve = dist * 0.15;
+    const mx = (a.x+b.x)/2 - dy*curve/dist;
+    const my = (a.y+b.y)/2 + dx*curve/dist;
+
+    const path = ns('path', {{
+      d:`M${{a.x}},${{a.y}} Q${{mx}},${{my}} ${{b.x}},${{b.y}}`,
+      class:'edge-line',
+      stroke:clr,
+      'stroke-width': Math.max(.8, e.weight * 1.8),
+      'marker-end': arr,
+    }});
+    path.dataset.src = e.src;
+    path.dataset.dst = e.dst;
+    g.appendChild(path);
+  }});
+}}
+
+/* ════════════════════════════════════════
+   DRAW: NODES
+════════════════════════════════════════ */
+function drawNodes(g, layout, pmap) {{
+  g.innerHTML = '';
+  const cfg = D.configs[S.center];
+  if (!cfg) return;
+  const {{pos}} = layout;
+
+  Object.entries(pos).forEach(([id, p]) => {{
+    const node = pmap[id];
+    if (!node) return;
+
+    const isCenter = (id === S.center);
+    const ring     = p.ring;
+    const sz       = isCenter ? nodeSize(node.citations) * 1.35 : nodeSize(node.citations);
+    const clr      = ringColor(ring);
+    const fil      = isCenter ? 'f-center' : 'f-node';
+
+    const grp = ns('g', {{
+      class: 'inode',
+      transform: `translate(${{p.x}},${{p.y}})`
+    }});
+    grp.dataset.id = id;
+
+    // Outer glow halo
+    grp.appendChild(ns('circle', {{
+      r: sz + 8, fill: clr, opacity: '.10',
+      class: 'n-glow', filter: `url(#f-glow-hi)`
+    }}));
+
+    if (isCenter) {{
+      // Pulse ring animation for center
+      const pr = ns('circle', {{
+        r: sz + 4, fill:'none', stroke:clr,
+        'stroke-width':'1.5', opacity:'.6',
+        class:'n-ring-anim'
+      }});
+      grp.appendChild(pr);
+    }}
+
+    // Main circle
+    grp.appendChild(ns('circle', {{
+      r: sz,
+      fill: `url(#grad-${{ring==='center'?'center':ring}})`,
+      stroke: clr, 'stroke-width': isCenter ? 2 : 1.4,
+      filter: `url(#${{fil}})`,
+    }}));
+
+    // Inner highlight dot (top-left)
+    grp.appendChild(ns('circle', {{
+      r: sz*.28, cx: -sz*.25, cy: -sz*.28,
+      fill: 'rgba(255,255,255,0.22)'
+    }}));
+
+    // Year badge
+    const yrTxt = ns('text', {{
+      x:0, y:0, class:'n-yr', fill:clr
+    }});
+    yrTxt.textContent = node.year;
+    grp.appendChild(yrTxt);
+
+    // Label below
+    const lblY = sz + 12;
+    const lbl  = ns('text', {{ x:0, y:lblY, class:'n-lbl' }});
+    lbl.textContent = node.title_short
+      ? node.title_short.substring(0, isCenter?50:32) + (node.title_short.length > (isCenter?50:32) ? '…':'')
+      : id.substring(0,20);
+    grp.appendChild(lbl);
+
+    // Citation count below label
+    const cTxt = ns('text', {{
+      x:0, y:lblY+13, class:'n-cite', fill:clr, opacity:'.65'
+    }});
+    cTxt.textContent = `↑ ${{(node.citations||0).toLocaleString()}}`;
+    grp.appendChild(cTxt);
+
+    // Events
+    grp.addEventListener('mouseenter', ev => showTooltip(ev, node, ring));
+    grp.addEventListener('mouseleave', hideTooltip);
+    grp.addEventListener('click',      ()  => onNodeClick(id, node, ring));
+
+    g.appendChild(grp);
   }});
 
-  nodeG.select('circle')
-    .classed('faded', n => !connected.has(n.id))
-    .classed('lit',   n => n.id===d.id);
-  link.classed('faded', e => {{
-    const s=typeof e.source==='object'?e.source.id:e.source;
-    const t=typeof e.target==='object'?e.target.id:e.target;
-    return !(s===d.id||t===d.id);
-  }}).classed('lit', e => {{
-    const s=typeof e.source==='object'?e.source.id:e.source;
-    const t=typeof e.target==='object'?e.target.id:e.target;
-    return s===d.id||t===d.id;
-  }});
+  // Move nebula glow to center
+  const cp = pos[S.center];
+  if (cp) moveNebula(cp.x, cp.y);
+}}
 
-  // Panel
-  document.getElementById('panel-title').textContent = d.title;
-  document.getElementById('panel-empty').style.display  = 'none';
-  document.getElementById('panel-detail').style.display = 'block';
+/* ════════════════════════════════════════
+   NEBULA
+════════════════════════════════════════ */
+function moveNebula(x, y) {{
+  const neb = document.getElementById('nebula');
+  const sz  = Math.min(W(), H()) * 0.55;
+  neb.style.cssText = `
+    width:${{sz}}px;height:${{sz}}px;
+    left:${{x - sz/2}}px;top:${{y - sz/2}}px;
+    background:radial-gradient(circle,rgba(251,191,36,.12) 0%,rgba(56,189,248,.05) 40%,transparent 70%);
+    display:block;
+  `;
+}}
 
-  const rc = CLR[d.ring]||CLR.r3;
-  document.getElementById('panel-rows').innerHTML = `
-    <div class="info-row">
-      <span class="info-label">Ring</span>
-      <span class="info-val" style="color:${{rc}}">${{esc(RNAME[d.ring]||d.ring)}}</span>
+/* ════════════════════════════════════════
+   STATS PANEL
+════════════════════════════════════════ */
+function updateStats() {{
+  const cfg  = D.configs[S.center] || {{}};
+  const st   = cfg.stats  || {{}};
+  const pmap = allNodesForCenter(S.center);
+  const cn   = pmap[S.center] || {{}};
+
+  const maxCite = Math.max(...D.papers.map(p=>p.citations), 1);
+  const pct     = Math.min(100, Math.round((cn.citations||0)/maxCite*100));
+
+  document.getElementById('sp-content').innerHTML = `
+    <div class="sp-row"><span class="sp-k">Judul</span></div>
+    <div style="font-family:var(--font-body);font-size:11px;color:var(--r1-c);padding:3px 0 6px;line-height:1.35">
+      ${{safeText((cn.title_short||'—').substring(0,55))}}
     </div>
-    <div class="info-row">
-      <span class="info-label">Tahun</span>
-      <span class="info-val">${{esc(d.year)}}</span>
+    <div class="sp-row">
+      <span class="sp-k">Sitasi</span>
+      <span class="sp-v" style="color:var(--center-c)">${{(cn.citations||0).toLocaleString()}}</span>
     </div>
-    <div class="info-row">
-      <span class="info-label">Sitasi</span>
-      <span class="info-val" style="color:#ffd700">${{(d.citations||0).toLocaleString()}}</span>
+    <div class="sp-bar"><div class="sp-fill" style="width:${{pct}}%;background:var(--center-c)"></div></div>
+    <div class="sp-row">
+      <span class="sp-k">Leluhur</span>
+      <span class="sp-v" style="color:var(--r1-c)">${{st.ancestors||0}}</span>
     </div>
-    <div class="info-row">
-      <span class="info-label">Koneksi</span>
-      <span class="info-val">${{connected.size-1}} paper</span>
+    <div class="sp-row">
+      <span class="sp-k">Penerus</span>
+      <span class="sp-v" style="color:var(--r2-c)">${{st.descendants||0}}</span>
     </div>
-    <div class="info-row">
-      <span class="info-label">Venue</span>
-      <span class="info-val" style="font-size:9px">${{esc((d.venue||'—').substring(0,32))}}</span>
+    <div class="sp-row">
+      <span class="sp-k">Tetangga</span>
+      <span class="sp-v" style="color:var(--r3-c)">${{st.extra_neighbors||0}}</span>
     </div>
-    <div class="info-row">
-      <span class="info-label">Author</span>
-      <span class="info-val" style="font-size:9px">${{esc((d.authors||'—').split(',').slice(0,2).join(', ').substring(0,35))}}</span>
+    <div class="sp-row">
+      <span class="sp-k">Tahun</span>
+      <span class="sp-v">${{cn.year||'?'}}</span>
     </div>
   `;
-  document.getElementById('panel-abstract').textContent = d.abstract||'';
-  const linkEl = document.getElementById('panel-open');
-  linkEl.href = d.link||'#';
-  linkEl.style.display = d.link ? 'block' : 'none';
 }}
 
-/* ── CLEAR ── */
-function clearSelection() {{
-  selectedId = null;
-  if (!G) return;
-  G.nodeG.select('circle').classed('faded',false).classed('lit',false);
-  G.link.classed('faded',false).classed('lit',false);
-  document.getElementById('panel-title').textContent    = 'Klik node untuk detail';
-  document.getElementById('panel-title').style.color    = '#484f58';
-  document.getElementById('panel-empty').style.display  = 'block';
-  document.getElementById('panel-detail').style.display = 'none';
+/* ════════════════════════════════════════
+   TOOLTIP
+════════════════════════════════════════ */
+function showTooltip(ev, node, ring) {{
+  const tt  = document.getElementById('tt');
+  const rc  = RING_CLR[ring] || RING_CLR.r3;
+  const rn  = RING_NAMES[ring] || ring;
+  tt.innerHTML = `
+    <div class="tt-title">${{safeText(node.title)}}</div>
+    <div class="tt-meta">👤 ${{safeText((node.authors||'N/A').split(',').slice(0,2).join(', '))}}</div>
+    <div class="tt-meta">📅 ${{node.year}} &nbsp;·&nbsp; ↑ ${{(node.citations||0).toLocaleString()}} sitasi</div>
+    <div class="tt-meta">🏛️ ${{safeText(node.venue||'—')}}</div>
+    <span class="tt-ring" style="color:${{rc}};border-color:${{rc}}">${{rn}}</span>
+    <div class="tt-abs">${{safeText(node.abstract)}}</div>
+    ${{ring!=='center' ? `<div class="tt-hint">🖱️ Klik sekali → detail &nbsp;|&nbsp; Klik lagi → jadikan pusat</div>` : '<div class="tt-hint">⊙ Ini adalah paper pusat saat ini</div>'}}
+  `;
+  const sc = document.getElementById('sc').getBoundingClientRect();
+  let tx = ev.clientX - sc.left + 14;
+  let ty = ev.clientY - sc.top  - 10;
+  if (tx + 295 > sc.width)  tx = ev.clientX - sc.left - 295;
+  if (ty + 260 > sc.height) ty = ev.clientY - sc.top  - 260;
+  tt.style.cssText = `display:block;left:${{tx}}px;top:${{ty}}px`;
 }}
-svg.on('click', clearSelection);
+function hideTooltip() {{ document.getElementById('tt').style.display = 'none'; }}
 
-/* ── RECENTER ── */
-function recenterNode() {{
-  if (!selectedId || selectedId===centerNodeId) return;
-  centerNodeId = selectedId;
-  clearSelection();
+/* ════════════════════════════════════════
+   NODE CLICK — focus then recenter
+════════════════════════════════════════ */
+let _lastClickId = null;
+function onNodeClick(id, node, ring) {{
+  hideTooltip();
+  if (id === S.center) return;
 
-  // Reassign rings dari sisi edge
-  const nmap = Object.fromEntries(RAW.nodes.map(n=>[n.id,n]));
-  const toC  = new Set(), fromC = new Set();
-  RAW.edges.forEach(e => {{
-    if(e.source===centerNodeId) fromC.add(e.target);
-    if(e.target===centerNodeId) toC.add(e.source);
-  }});
-  RAW.nodes.forEach(n => {{
-    if(n.id===centerNodeId)    n.ring='center';
-    else if(toC.has(n.id))     n.ring='r1';
-    else if(fromC.has(n.id))   n.ring='r2';
-    else                       n.ring='r3';
-  }});
-
-  G = buildGraph(RAW);
-  setTimeout(zoomReset, 120);
-}}
-
-/* ── SEARCH ── */
-function onSearch(q) {{
-  if (!G) return;
-  const term = q.trim().toLowerCase();
-  if (!term) {{
-    G.nodeG.select('circle').classed('faded',false).classed('lit',false);
-    G.link.classed('faded',false);
-    return;
+  if (_lastClickId === id) {{
+    // Second click → recenter
+    _lastClickId = null;
+    closePanel();
+    reCenter(id);
+  }} else {{
+    // First click → show panel
+    _lastClickId = id;
+    openPanel(id, node, ring);
+    applyFocus(id);
   }}
-  const hit = new Set(G.nodes.filter(n=>(n.title||'').toLowerCase().includes(term)).map(n=>n.id));
-  G.nodeG.select('circle')
-    .classed('faded', n => hit.size>0 && !hit.has(n.id))
-    .classed('lit',   n => hit.has(n.id));
-  G.link.classed('faded', e=>{{
-    const s=typeof e.source==='object'?e.source.id:e.source;
-    const t=typeof e.target==='object'?e.target.id:e.target;
-    return hit.size>0 && !hit.has(s) && !hit.has(t);
+}}
+
+function applyFocus(id) {{
+  S.focusNode = id;
+  const cfg = D.configs[S.center];
+  if (!cfg) return;
+  const connected = new Set([id, S.center]);
+  cfg.edges.forEach(e => {{
+    if (e.src===id||e.dst===id) {{ connected.add(e.src); connected.add(e.dst); }}
+  }});
+  document.querySelectorAll('.inode').forEach(el => {{
+    el.classList.toggle('dim', !connected.has(el.dataset.id));
+  }});
+  document.querySelectorAll('.edge-line').forEach(el => {{
+    const conn = connected.has(el.dataset.src) && connected.has(el.dataset.dst);
+    el.classList.toggle('dim', !conn);
   }});
 }}
 
-/* ── RESIZE ── */
-window.addEventListener('resize', () => {{
-  if (G?.sim) {{
-    G.sim.force('center', d3.forceCenter(W()/2, H()/2).strength(.05));
-    G.sim.alpha(.12).restart();
+function clearFocus() {{
+  S.focusNode  = null;
+  _lastClickId = null;
+  document.querySelectorAll('.inode,.edge-line').forEach(el => el.classList.remove('dim'));
+}}
+
+/* ════════════════════════════════════════
+   DETAIL PANEL
+════════════════════════════════════════ */
+let _panelNodeId = null;
+function openPanel(id, node, ring) {{
+  _panelNodeId = id;
+  const rc = RING_CLR[ring] || RING_CLR.r3;
+  document.getElementById('dp-title').textContent = node.title;
+  document.getElementById('dp-abs').textContent   = node.abstract;
+  document.getElementById('dp-link').href          = node.link || '#';
+  document.getElementById('dp-rows').innerHTML = `
+    <div class="dp-row"><span class="dp-k">TAHUN</span>  <span class="dp-v">${{node.year}}</span></div>
+    <div class="dp-row"><span class="dp-k">SITASI</span> <span class="dp-v" style="color:var(--center-c)">${{(node.citations||0).toLocaleString()}}</span></div>
+    <div class="dp-row"><span class="dp-k">RING</span>   <span class="dp-v" style="color:${{rc}}">${{RING_NAMES[ring]||ring}}</span></div>
+    <div class="dp-row"><span class="dp-k">VENUE</span>  <span class="dp-v" style="font-size:10px">${{safeText((node.venue||'—').substring(0,25))}}</span></div>
+  `;
+  document.getElementById('dp').classList.add('vis');
+}}
+function closePanel() {{
+  document.getElementById('dp').classList.remove('vis');
+  clearFocus();
+}}
+function reCenterFromPanel() {{
+  if (_panelNodeId) {{
+    closePanel();
+    reCenter(_panelNodeId);
   }}
+}}
+
+/* ════════════════════════════════════════
+   RE-CENTER with transition animation
+════════════════════════════════════════ */
+function reCenter(newId) {{
+  if (S.transitioning || newId === S.center) return;
+  if (!D.configs[newId]) return;
+  S.transitioning = true;
+
+  // Fade out existing nodes
+  const gn = document.getElementById('g-nodes');
+  const ge = document.getElementById('g-edges');
+  gn.style.transition = 'opacity .35s';
+  ge.style.transition = 'opacity .35s';
+  gn.style.opacity    = '0';
+  ge.style.opacity    = '0';
+
+  setTimeout(() => {{
+    S.center = newId;
+    // Update selector
+    document.getElementById('paper-sel').value = newId;
+    // Re-render
+    renderMain();
+    updateStats();
+    // Fade back in
+    gn.style.opacity = '1';
+    ge.style.opacity = '1';
+    setTimeout(() => {{ S.transitioning = false; }}, 350);
+  }}, 320);
+}}
+
+/* ════════════════════════════════════════
+   TOGGLES
+════════════════════════════════════════ */
+function toggleParticles() {{
+  S.showPart = !S.showPart;
+  const b = document.getElementById('btn-part');
+  b.className = 'c-btn' + (S.showPart ? ' on-amber' : '');
+}}
+function toggleOrbits() {{
+  S.showOrbits = !S.showOrbits;
+  const b = document.getElementById('btn-orb');
+  b.className = 'c-btn' + (S.showOrbits ? ' on-sky' : '');
+  const layout = computeLayout(S.center, W(), H());
+  drawOrbits(document.getElementById('g-orbits'), layout);
+}}
+function toggleHeatmap() {{
+  S.heatmap = !S.heatmap;
+  const b = document.getElementById('btn-heat');
+  b.className = 'c-btn' + (S.heatmap ? ' on-green' : '');
+  renderMain();
+}}
+function toggleCompare() {{
+  S.compare = !S.compare;
+  const b  = document.getElementById('btn-cmp');
+  b.className = 'c-btn' + (S.compare ? ' on-sky' : '');
+  document.getElementById('compare-wrap').classList.toggle('vis', S.compare);
+  document.getElementById('sc').style.display = S.compare ? 'none' : 'block';
+  document.getElementById('sp').style.display = S.compare ? 'none' : 'block';
+  if (S.compare) renderCompare();
+}}
+function onSelectCenter(val) {{
+  if (val && val !== S.center) reCenter(val);
+}}
+
+/* ════════════════════════════════════════
+   COMPARE MODE RENDER
+════════════════════════════════════════ */
+function renderCompare() {{
+  const selA = document.getElementById('cmp-sel-a').value || S.compareA;
+  const selB = document.getElementById('cmp-sel-b').value || S.compareB;
+
+  const svgA = document.getElementById('cmp-svg-a');
+  const svgB = document.getElementById('cmp-svg-b');
+
+  const wHalf = (document.getElementById('compare-wrap').clientWidth / 2) - 16;
+  const hCmp  = document.getElementById('compare-wrap').clientHeight - 8;
+
+  [svgA,svgB].forEach(s=>{{s.setAttribute('width',wHalf);s.setAttribute('height',hCmp);}});
+
+  renderMiniMap(svgA, selA, wHalf, hCmp);
+  renderMiniMap(svgB, selB, wHalf, hCmp);
+
+  // Find shared nodes
+  const cfgA = D.configs[selA] || {{}};
+  const cfgB = D.configs[selB] || {{}};
+  const setA = new Set([...(cfgA.ring1||[]),...(cfgA.ring2||[])]);
+  const setB = new Set([...(cfgB.ring1||[]),...(cfgB.ring2||[])]);
+  const shared = [...setA].filter(id => setB.has(id));
+  const msg = shared.length
+    ? `⇌ ${{shared.length}} paper bersama terdeteksi`
+    : '— tidak ada paper yang sama —';
+  document.getElementById('cmp-badge-a').textContent = msg;
+  document.getElementById('cmp-badge-b').textContent = msg;
+}}
+
+function renderMiniMap(svgEl, centerId, w, h) {{
+  svgEl.innerHTML = '';
+
+  const cfg = D.configs[centerId];
+  if (!cfg) return;
+
+  const pmap   = allNodesForCenter(centerId);
+  const layout = computeLayout(centerId, w, h, true);
+  const {{pos}} = layout;
+
+  // Defs
+  const defs = ns('defs');
+  svgEl.appendChild(defs);
+  svgEl.appendChild(ns('rect',{{width:w,height:h,fill:'rgba(3,10,20,.9)',rx:'7'}}));
+
+  // Edges
+  cfg.edges.forEach(e => {{
+    const a = pos[e.src], b = pos[e.dst];
+    if (!a||!b) return;
+    const clr = e.type==='r1'?'rgba(56,189,248,.35)':e.type==='r2'?'rgba(52,211,153,.3)':'rgba(148,163,184,.18)';
+    const dx=b.x-a.x,dy=b.y-a.y,dist=Math.sqrt(dx*dx+dy*dy)||1;
+    const mx=(a.x+b.x)/2-dy*.12,my=(a.y+b.y)/2+dx*.12;
+    svgEl.appendChild(ns('path',{{
+      d:`M${{a.x}},${{a.y}} Q${{mx}},${{my}} ${{b.x}},${{b.y}}`,
+      fill:'none',stroke:clr,'stroke-width': Math.max(.6,e.weight*1.4)
+    }}));
+  }});
+
+  // Nodes
+  Object.entries(pos).forEach(([id, p]) => {{
+    const node = pmap[id];
+    if (!node) return;
+    const isC = id===centerId;
+    const sz  = isC ? 14 : Math.max(7, Math.min(18, Math.log((node.citations||0)+1)*3.5));
+    const clr = RING_CLR[p.ring]||RING_CLR.r3;
+    const grp = ns('g',{{transform:`translate(${{p.x}},${{p.y}})`}});
+    grp.appendChild(ns('circle',{{r:sz,fill:clr,opacity:isC?.9:.65}}));
+    if (isC) {{
+      const lt=ns('text',{{x:0,y:sz+11,fill:'#fbbf24',
+        'font-family':'Fira Code,monospace','font-size':'8',
+        'text-anchor':'middle','dominant-baseline':'hanging'}});
+      lt.textContent=(node.title_short||id).substring(0,28);
+      grp.appendChild(lt);
+    }}
+    svgEl.appendChild(grp);
+  }});
+}}
+
+/* ════════════════════════════════════════
+   PARTICLE SYSTEM
+════════════════════════════════════════ */
+const PARTICLES = [];
+const P_MAX     = 60;
+const P_SPEED   = 0.012;
+
+function spawnParticle(srcPos, dstPos, ring) {{
+  if (PARTICLES.length >= P_MAX) return;
+  const clr = ring==='r1' ? '#38bdf8'
+             :ring==='r2' ? '#34d399'
+             :               '#94a3b8';
+  PARTICLES.push({{
+    sx:srcPos.x, sy:srcPos.y,
+    dx:dstPos.x, dy:dstPos.y,
+    t:Math.random(),    // start at random position along path
+    spd: P_SPEED * (0.6 + Math.random()*.8),
+    r: 1.5 + Math.random()*1.5,
+    clr,
+    alpha: .6 + Math.random()*.4,
+    trail: [],
+  }});
+}}
+
+function updateParticles() {{
+  for (let i = PARTICLES.length-1; i>=0; i--) {{
+    const p = PARTICLES[i];
+    p.trail.push({{x:lerp(p.sx,p.dx,p.t), y:lerp(p.sy,p.dy,p.t)}});
+    if (p.trail.length > 6) p.trail.shift();
+    p.t += p.spd;
+    if (p.t > 1) PARTICLES.splice(i,1);
+  }}
+}}
+
+function lerp(a,b,t) {{ return a + (b-a)*t; }}
+
+function drawParticles() {{
+  const cv  = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if (!S.showPart) return;
+
+  PARTICLES.forEach(p => {{
+    const x = lerp(p.sx,p.dx,p.t);
+    const y = lerp(p.sy,p.dy,p.t);
+    // Trail
+    if (p.trail.length > 1) {{
+      ctx.beginPath();
+      ctx.moveTo(p.trail[0].x, p.trail[0].y);
+      p.trail.forEach(pt => ctx.lineTo(pt.x,pt.y));
+      ctx.strokeStyle = p.clr + '44';
+      ctx.lineWidth   = p.r * .6;
+      ctx.stroke();
+    }}
+    // Core
+    const grd = ctx.createRadialGradient(x,y,0,x,y,p.r*2);
+    grd.addColorStop(0, p.clr + 'ff');
+    grd.addColorStop(1, p.clr + '00');
+    ctx.beginPath();
+    ctx.arc(x,y,p.r*2,0,Math.PI*2);
+    ctx.fillStyle = grd;
+    ctx.fill();
+  }});
+}}
+
+let _partTick = 0;
+function tickParticles() {{
+  _partTick++;
+  // Spawn particles from current edges every N frames
+  if (_partTick % 8 === 0 && S.showPart) {{
+    const cfg = D.configs[S.center];
+    if (!cfg) return;
+    const layout = computeLayout(S.center, W(), H());
+    const {{pos}} = layout;
+    // Pick a random edge and spawn a particle
+    const edges = cfg.edges;
+    if (!edges.length) return;
+    const e = edges[Math.floor(Math.random()*edges.length)];
+    const a = pos[e.src], b = pos[e.dst];
+    if (a && b) spawnParticle(a, b, e.type);
+  }}
+}}
+
+/* ════════════════════════════════════════
+   MAIN RENDER
+════════════════════════════════════════ */
+function renderMain() {{
+  const w = W(), h = H();
+  const layout = computeLayout(S.center, w, h);
+  const pmap   = allNodesForCenter(S.center);
+
+  drawOrbits(document.getElementById('g-orbits'), layout);
+  drawEdges (document.getElementById('g-edges'),  layout, pmap);
+  drawNodes (document.getElementById('g-nodes'),  layout, pmap);
+}}
+
+/* ════════════════════════════════════════
+   ANIMATION LOOP
+════════════════════════════════════════ */
+function animLoop() {{
+  tickParticles();
+  updateParticles();
+  drawParticles();
+  requestAnimationFrame(animLoop);
+}}
+
+/* ════════════════════════════════════════
+   POPULATE SELECTORS
+════════════════════════════════════════ */
+function populateSelectors() {{
+  const opts = D.papers.map(p =>
+    `<option value="${{safeText(p.id)}}">${{safeText(p.title_short||p.id.substring(0,35))}}</option>`
+  ).join('');
+
+  document.getElementById('paper-sel').innerHTML = opts;
+  document.getElementById('paper-sel').value     = S.center;
+
+  document.getElementById('cmp-sel-a').innerHTML = opts;
+  document.getElementById('cmp-sel-b').innerHTML = opts;
+  const p2 = D.papers[1];
+  document.getElementById('cmp-sel-a').value = S.compareA;
+  document.getElementById('cmp-sel-b').value = p2 ? p2.id : S.compareB;
+}}
+
+/* ════════════════════════════════════════
+   CANVAS RESIZE
+════════════════════════════════════════ */
+function resizeCanvas() {{
+  const cv = document.getElementById('cv');
+  cv.width  = W();
+  cv.height = H();
+}}
+
+/* ════════════════════════════════════════
+   CLICK OUTSIDE → clear focus
+════════════════════════════════════════ */
+document.getElementById('svg').addEventListener('click', ev => {{
+  if (ev.target.tagName === 'svg' || ev.target.tagName === 'rect') closePanel();
 }});
 
-/* ── START ── */
-G = buildGraph(RAW);
-setTimeout(zoomReset, 80);
+/* ════════════════════════════════════════
+   RESIZE
+════════════════════════════════════════ */
+let _resizeT;
+window.addEventListener('resize', () => {{
+  clearTimeout(_resizeT);
+  _resizeT = setTimeout(() => {{
+    resizeCanvas();
+    renderMain();
+  }}, 90);
+}});
+
+/* ════════════════════════════════════════
+   INIT
+════════════════════════════════════════ */
+function init() {{
+  resizeCanvas();
+  populateSelectors();
+  renderMain();
+  updateStats();
+  requestAnimationFrame(animLoop);
+}}
+
+document.readyState === 'loading'
+  ? document.addEventListener('DOMContentLoaded', init)
+  : setTimeout(init, 60);
 </script>
 </body>
 </html>"""
