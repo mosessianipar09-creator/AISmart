@@ -40,7 +40,7 @@ def render_contradiction(papers: list, height: int = 700) -> str:
 
     norm = [_norm(p, i) for i, p in enumerate(papers)]
     pj   = (
-        json.dumps(norm, ensure_ascii=False)
+        json.dumps(norm, ensure_ascii=True)  # FIX: was ensure_ascii=False, caused UnicodeEncodeError in Streamlit
         .replace("<", r"\u003c")
         .replace("/", r"\/")
     )
