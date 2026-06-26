@@ -27,19 +27,14 @@ from ai_layer import (
     build_summary_prompt,
     build_critique_prompt,
 )
-from graph_layer import (
+from components.graph_layer import (
     build_knowledge_graph,
     render_graph,
     graph_stats,
 )
-from graph_influence import render_influence, influence_stats
-from graph_gap import render_gap, gap_stats
-from topic_river import render_topic_river, river_stats
-
-import re
-import math
-import collections
-
+from components.graph_influence import render_influence, influence_stats
+from components.graph_gap import render_gap, gap_stats
+from components.topic_river import render_topic_river, river_stats
 
 # ─────────────────────────────────────────────────────
 # HELPER FUNCTIONS — NEW VISUALIZATIONS
